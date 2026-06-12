@@ -175,6 +175,7 @@ class TestEndpointDispatch:
         submit_call = mock_client.post.call_args_list[1]
         assert submit_call.args[0].endswith("/seedance-2.0-global/image-to-video")
         assert submit_call.kwargs["json"]["firstFrameUrl"] == "https://cos/first.png"
+        assert submit_call.kwargs["json"]["realPersonMode"] is True
         assert "lastFrameUrl" not in submit_call.kwargs["json"]
 
     async def test_image_to_video_with_last_frame(self, tmp_path: Path):
@@ -251,6 +252,7 @@ class TestEndpointDispatch:
             "https://cos/r1.png",
             "https://cos/r2.png",
         ]
+        assert submit_call.kwargs["json"]["realPersonMode"] is True
 
 
 class TestPollAndErrors:

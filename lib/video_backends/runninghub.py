@@ -181,16 +181,18 @@ class RunningHubVideoBackend:
         }
 
         # 参考图 → multimodal 端点(imageUrls)
+        # realPersonMode 默认开:小说改编素材常含真人形象,关闭时上游直接拒绝(报错要求设为 true)
         reference_images = [Path(r) for r in (request.reference_images or []) if r]
         if reference_images:
             image_urls = await self._upload_images(client, reference_images, limit=_MAX_REFERENCE_IMAGES)
-            payload = {"prompt": request.prompt, "imageUrls": image_urls, **common}
+            payload = {"prompt": request.prompt, "imageUrls": image_urls, "realPersonMode": True, **common}
             return _MULTIMODAL_VIDEO_PATH, payload
 
         # 首帧(可选尾帧)→ image 端点
+        # realPersonMode 默认开:分镜首帧常含真人形象,关闭时上游直接拒绝(报错要求设为 true)
         if request.start_image:
             first_url = await self._upload_image(client, Path(request.start_image))
-            payload = {"prompt": request.prompt, "firstFrameUrl": first_url, **common}
+            payload = {"prompt": request.prompt, "firstFrameUrl": first_url, "realPersonMode": True, **common}
             if request.end_image and Path(request.end_image).is_file():
                 payload["lastFrameUrl"] = await self._upload_image(client, Path(request.end_image))
             return _IMAGE_TO_VIDEO_PATH, payload

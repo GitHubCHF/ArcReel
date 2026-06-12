@@ -764,6 +764,7 @@ export default {
   'endpoint_vidu_video_display': 'Vidu 视频',
   'endpoint_dashscope_image_display': '阿里百炼（图片）',
   'endpoint_dashscope_async_video_display': '阿里百炼（异步视频）',
+  'endpoint_runninghub_seedance_display': 'RunningHub (Seedance 2.0)',
   'endpoint_catalog_loading': '加载端点目录…',
   // Image Capability
   'image_capability_t2i': '文生图',

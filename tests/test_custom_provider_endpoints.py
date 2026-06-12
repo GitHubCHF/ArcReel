@@ -30,14 +30,13 @@ class TestRegistry:
             "vidu-video",
             "dashscope-image",
             "dashscope-async-video",
-            "runninghub-seedance",
         }
 
     def test_each_spec_has_required_fields(self):
         for key, spec in ENDPOINT_REGISTRY.items():
             assert spec.key == key
             assert spec.media_type in {"text", "image", "video"}
-            assert spec.family in {"openai", "google", "newapi", "v2", "ark", "vidu", "dashscope", "runninghub"}
+            assert spec.family in {"openai", "google", "newapi", "v2", "ark", "vidu", "dashscope"}
             assert spec.display_name_key.startswith("endpoint_")
             assert callable(spec.build_backend)
             assert spec.request_method == "POST"
@@ -66,8 +65,6 @@ class TestRegistry:
         # 既有显式 int 保留，行为零变化
         assert ENDPOINT_REGISTRY["openai-video"].video_max_reference_images == 1
         assert ENDPOINT_REGISTRY["newapi-video"].video_max_reference_images == 0
-        # RunningHub seedance 2.0 固定上限 9(URL 区分端点,非 model 区分)
-        assert ENDPOINT_REGISTRY["runninghub-seedance"].video_max_reference_images == 9
 
     def test_video_caps_declaration_bindings(self):
         """每个 video endpoint 选对了上限来源：None-cap 的绑 caps_fn、显式 int 的不绑。
@@ -139,7 +136,6 @@ class TestRegistry:
             "ark-seedance",
             "vidu-video",
             "dashscope-async-video",
-            "runninghub-seedance",
         }
 
 

@@ -763,7 +763,6 @@ export default {
   'endpoint_vidu_video_display': 'Vidu Video',
   'endpoint_dashscope_image_display': 'Alibaba Model Studio (Image)',
   'endpoint_dashscope_async_video_display': 'Alibaba Model Studio (Async Video)',
-  'endpoint_runninghub_seedance_display': 'RunningHub (Seedance 2.0)',
   'endpoint_catalog_loading': 'Loading endpoint catalog…',
   // Image Capability
   'image_capability_t2i': 'T2I',

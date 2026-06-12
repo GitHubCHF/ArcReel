@@ -217,7 +217,6 @@ class TestEndpointCatalog:
             "vidu-video",
             "dashscope-image",
             "dashscope-async-video",
-            "runninghub-seedance",
         }
 
     def test_descriptor_shape(self, client: TestClient):

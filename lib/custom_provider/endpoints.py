@@ -27,7 +27,6 @@ from lib.video_backends.base import VideoCapabilities
 from lib.video_backends.dashscope import DashScopeVideoBackend
 from lib.video_backends.newapi import NewAPIVideoBackend
 from lib.video_backends.openai import OpenAIVideoBackend
-from lib.video_backends.runninghub import RunningHubVideoBackend
 from lib.video_backends.v2_video_generations import V2VideoGenerationsBackend
 from lib.video_backends.vidu import ViduVideoBackend
 
@@ -171,12 +170,6 @@ def _build_dashscope_async_video(provider, model_id: str) -> CustomVideoBackend:
     return CustomVideoBackend(provider_id=provider.provider_id, delegate=delegate, model=model_id)
 
 
-def _build_runninghub_seedance(provider, model_id: str) -> CustomVideoBackend:
-    # base_url 归一化(容忍 host-only / 回落官方域名)由 RunningHubVideoBackend 内部处理
-    delegate = RunningHubVideoBackend(api_key=provider.api_key, base_url=provider.base_url, model=model_id)
-    return CustomVideoBackend(provider_id=provider.provider_id, delegate=delegate, model=model_id)
-
-
 # ── ENDPOINT_REGISTRY 注册表 ───────────────────────────────────────
 
 
@@ -313,18 +306,6 @@ ENDPOINT_REGISTRY: dict[str, EndpointSpec] = {
         # 多 model（happyhorse-r2v=9 / wan2.7-r2v=5）容量不同 → endpoint 维度不声明 int cap，
         # 按 model 读 backend caps（不构造 client）。
         video_caps_for_model=DashScopeVideoBackend.video_capabilities_for_model,
-    ),
-    "runninghub-seedance": EndpointSpec(
-        key="runninghub-seedance",
-        media_type="video",
-        family="runninghub",
-        display_name_key="endpoint_runninghub_seedance_display",
-        request_method="POST",
-        # 展示用主端点；实际三端点(text/image/multimodal)由 backend 按输入派发
-        request_path_template="/openapi/v2/bytedance/seedance-2.0-global/text-to-video",
-        build_backend=_build_runninghub_seedance,
-        # seedance 2.0 所有 model 共享固定上限 9(URL 区分端点,非 model 区分),用显式 int。
-        video_max_reference_images=9,
     ),
 }
 

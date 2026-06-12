@@ -196,6 +196,17 @@ def _dashscope_audio_pricing(model_id: str, per_10k_chars: float) -> PerCharacte
     return PerCharacter(rates={model_id: per_10k_chars}, default_model=model_id, currency="CNY")
 
 
+# RunningHub seedance 2.0 视频费率（美元/秒），按分辨率（无参考视频档；本项目不传参考视频）。
+# text/image/multimodal 三端点共用同一套分辨率价。分辨率键小写，匹配 PerSecondMatrix resolution_only 查表。
+def _runninghub_video_pricing(model_id: str, rates: dict[str, float]) -> PerSecondMatrix:
+    return PerSecondMatrix(
+        rates={model_id: {(res, None): rate for res, rate in rates.items()}},
+        default_model=model_id,
+        dimensions="resolution_only",
+        currency="USD",
+    )
+
+
 PROVIDER_REGISTRY: dict[str, ProviderMeta] = {
     "gemini-aistudio": ProviderMeta(
         display_name="AI Studio",
@@ -917,6 +928,37 @@ PROVIDER_REGISTRY: dict[str, ProviderMeta] = {
             ),
         },
         default_base_url=DASHSCOPE_BASE_URL,
+    ),
+    "runninghub": ProviderMeta(
+        display_name="RunningHub",
+        description="RunningHub 标准模型 API，接入字节 seedance 2.0 视频生成（文生/图生/参考生视频），仅视频能力。",
+        required_keys=["api_key"],
+        optional_keys=["base_url", "video_max_workers"],
+        secret_keys=["api_key"],
+        models={
+            "seedance-2.0": ModelInfo(
+                display_name="Seedance 2.0",
+                media_type="video",
+                capabilities=["text_to_video", "image_to_video", "generate_audio", "seed_control"],
+                default=True,
+                supported_durations=list(range(4, 16)),
+                resolutions=["480p", "720p", "native1080p", "1080p", "2k", "4k"],
+                max_reference_images=9,
+                # 无参考视频档单价（USD/秒），三端点共用。分辨率键小写匹配查表。
+                pricing=_runninghub_video_pricing(
+                    "seedance-2.0",
+                    {
+                        "480p": 0.1,
+                        "720p": 0.2,
+                        "native1080p": 0.5,
+                        "1080p": 0.24,
+                        "2k": 0.26,
+                        "4k": 0.29,
+                    },
+                ),
+            ),
+        },
+        default_base_url="https://www.runninghub.ai",
     ),
 }
 

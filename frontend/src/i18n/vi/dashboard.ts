@@ -740,7 +740,6 @@ export default {
   'endpoint_vidu_video_display': 'Vidu Video',
   'endpoint_dashscope_image_display': 'Alibaba Model Studio (Ảnh)',
   'endpoint_dashscope_async_video_display': 'Alibaba Model Studio (Video bất đồng bộ)',
-  'endpoint_runninghub_seedance_display': 'RunningHub (Seedance 2.0)',
   'endpoint_catalog_loading': 'Đang tải danh mục endpoint…',
   // Image Capability
   'image_capability_t2i': 'T2I',

@@ -10,6 +10,7 @@ MESSAGES: dict[str, str] = {
     "provider_name_openai": "OpenAI",
     "provider_name_vidu": "Vidu",
     "provider_name_dashscope": "Alibaba Model Studio",
+    "provider_name_runninghub": "RunningHub",
     # Provider descriptions
     "provider_desc_gemini-aistudio": "Google AI Studio provides Gemini models with image and video generation, ideal for rapid prototyping and personal projects.",
     "provider_desc_gemini-vertex": "Google Cloud Vertex AI enterprise platform supporting Gemini and Imagen models with higher quotas and audio generation.",
@@ -19,6 +20,7 @@ MESSAGES: dict[str, str] = {
     "provider_desc_openai": "OpenAI platform supporting GPT-5.4 text, GPT Image and Sora video generation.",
     "provider_desc_vidu": "Shengshu Vidu video platform supporting text-to-video, image-to-video, first-last frame, reference-to-video and reference-to-image. Image and video only.",
     "provider_desc_dashscope": "Alibaba Cloud Model Studio (DashScope) full-modality platform supporting Qwen text, Qwen-Image / Wan images, and HappyHorse / Wan video (including reference-to-video).",
+    "provider_desc_runninghub": "RunningHub standard model API, integrating ByteDance Seedance 2.0 video generation (text-/image-/reference-to-video). Video only.",
     # Agent preset notes (lib/agent_provider_catalog.py)
     "preset_notes_deepseek": "DeepSeek official Anthropic-compat endpoint; needs sk- prefixed key.",
     "preset_notes_xiaomi_mimo": "Xiaomi MiMo only accepts known model names; no public model list.",

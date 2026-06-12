@@ -69,3 +69,9 @@ from lib.providers import PROVIDER_DASHSCOPE  # noqa: E402
 from lib.video_backends.dashscope import DashScopeVideoBackend  # noqa: E402
 
 register_backend(PROVIDER_DASHSCOPE, DashScopeVideoBackend)
+
+# RunningHub — seedance 2.0 视频（内置 provider，单 key + 固定 .ai 生成 / .cn 上传端点）
+from lib.providers import PROVIDER_RUNNINGHUB  # noqa: E402
+from lib.video_backends.runninghub import RunningHubVideoBackend  # noqa: E402
+
+register_backend(PROVIDER_RUNNINGHUB, RunningHubVideoBackend)

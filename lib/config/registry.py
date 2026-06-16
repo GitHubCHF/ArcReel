@@ -960,6 +960,27 @@ PROVIDER_REGISTRY: dict[str, ProviderMeta] = {
         },
         default_base_url="https://www.runninghub.ai",
     ),
+    "tecdo": ProviderMeta(
+        display_name="TecDo",
+        description="钛动能力平台 API，接入字节 seedance 2.0 视频生成（文生/图生/参考生视频），仅视频能力。",
+        required_keys=["api_key"],
+        optional_keys=["base_url", "video_max_workers"],
+        secret_keys=["api_key"],
+        models={
+            "seedance2.0": ModelInfo(
+                display_name="Seedance 2.0",
+                media_type="video",
+                capabilities=["text_to_video", "image_to_video", "generate_audio", "seed_control"],
+                default=True,
+                supported_durations=list(range(4, 16)),
+                resolutions=["480p", "720p", "1080p"],
+                max_reference_images=9,
+                # 预估价表留空：实际费用以 task 查询返回的 actualAmount 为准（媒体后端透传计费）。
+                pricing=None,
+            ),
+        },
+        default_base_url="https://open-power.tec-do.cn",
+    ),
 }
 
 

@@ -11,6 +11,7 @@ PROVIDER_VIDU = "vidu"
 PROVIDER_NEWAPI = "newapi"
 PROVIDER_DASHSCOPE = "dashscope"
 PROVIDER_RUNNINGHUB = "runninghub"
+PROVIDER_TECDO = "tecdo"
 PROVIDER_ANTHROPIC = "anthropic"
 
 CallType = Literal["image", "video", "text", "audio"]

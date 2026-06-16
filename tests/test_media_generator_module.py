@@ -34,6 +34,8 @@ class _FakeVideoResult:
         self.video_uri = "video-uri"
         self.usage_tokens = 0
         self.generate_audio = True
+        self.actual_cost = None
+        self.actual_currency = None
 
 
 class _FakeVideoBackend:

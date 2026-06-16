@@ -52,8 +52,8 @@ class TestProviderMeta:
 
 
 class TestProviderRegistry:
-    # vidu / runninghub 仅提供图片与视频能力，跳过文本相关断言
-    _TEXT_PROVIDERS = [pid for pid in PROVIDER_REGISTRY if pid not in ("vidu", "runninghub")]
+    # vidu / runninghub / tecdo 仅提供图片与视频能力，跳过文本相关断言
+    _TEXT_PROVIDERS = [pid for pid in PROVIDER_REGISTRY if pid not in ("vidu", "runninghub", "tecdo")]
 
     def test_all_providers_have_text_models(self):
         for provider_id in self._TEXT_PROVIDERS:

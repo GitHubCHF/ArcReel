@@ -75,3 +75,9 @@ from lib.providers import PROVIDER_RUNNINGHUB  # noqa: E402
 from lib.video_backends.runninghub import RunningHubVideoBackend  # noqa: E402
 
 register_backend(PROVIDER_RUNNINGHUB, RunningHubVideoBackend)
+
+# 钛动能力平台 — seedance 2.0 视频（内置 provider，X-App-Secret 单 key，单 create 端点 + actualAmount 计费）
+from lib.providers import PROVIDER_TECDO  # noqa: E402
+from lib.video_backends.tecdo import TecDoVideoBackend  # noqa: E402
+
+register_backend(PROVIDER_TECDO, TecDoVideoBackend)

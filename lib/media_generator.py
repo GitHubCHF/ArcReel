@@ -707,7 +707,8 @@ class MediaGenerator:
             video_ref = None
             video_uri = result.video_uri
 
-            # Track usage with provider info
+            # Track usage with provider info。provider 回报实际消耗(如钛动 actualAmount)时
+            # 以其覆盖 cost_amount/currency,否则传 None 让 repo 按 registry 价表估算。
             await self.usage_tracker.finish_call(
                 call_id=call_id,
                 status="success",
@@ -715,6 +716,8 @@ class MediaGenerator:
                 usage_tokens=result.usage_tokens,
                 service_tier=version_metadata.get("service_tier", "default"),
                 generate_audio=result.generate_audio,
+                cost_amount=result.actual_cost,
+                currency=result.actual_currency,
             )
         except Exception as e:
             # 记录调用失败

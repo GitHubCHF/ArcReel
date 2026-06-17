@@ -659,6 +659,7 @@ export function ShotDetail({
         posterPath={assets?.video_thumbnail ?? null}
         aspectRatio={aspectRatio}
         generating={generatingVideo}
+        confirmOnRegenerate
         generateDisabled={!hasStoryboard || dirty || saving}
         generateDisabledHint={dirty ? dirtyHint : undefined}
         estimatedCost={vidEstimate ?? undefined}

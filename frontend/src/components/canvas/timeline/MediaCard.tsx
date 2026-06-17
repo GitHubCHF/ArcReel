@@ -1,8 +1,10 @@
+import { useEffect, useState } from "react";
 import { Sparkles, ImageIcon, Film } from "lucide-react";
 import { useTranslation } from "react-i18next";
 import { API } from "@/api";
 import { useProjectsStore } from "@/stores/projects-store";
 import { AspectFrame } from "@/components/ui/AspectFrame";
+import { ConfirmDialog } from "@/components/ui/ConfirmDialog";
 import { ImageFlipReveal } from "@/components/ui/ImageFlipReveal";
 import { PreviewableImageFrame } from "@/components/ui/PreviewableImageFrame";
 import {
@@ -34,6 +36,8 @@ interface MediaCardProps {
   generateDisabledHint?: string;
   /** 进行中状态 */
   generating?: boolean;
+  /** 已有结果时点击「重新生成」先二次确认（避免页面未同步时误重复生成，消耗额度） */
+  confirmOnRegenerate?: boolean;
   /** 估算费用（按币种 breakdown，例如 {USD: 0.12} 或 {CNY: 5.25}） */
   estimatedCost?: CostBreakdown;
   /** 触发生成 */
@@ -64,6 +68,7 @@ export function MediaCard({
   generateDisabled,
   generateDisabledHint,
   generating,
+  confirmOnRegenerate,
   estimatedCost,
   onGenerate,
   onRestore,
@@ -72,6 +77,32 @@ export function MediaCard({
   uploadDisabled,
 }: MediaCardProps) {
   const { t } = useTranslation("dashboard");
+
+  // 乐观本地锁：点击后立刻置灰，直到任务进入队列(generating 变 true)被真正接管。
+  // 桥接「点击 → 任务出现在 tasks 轮询」之间的窗口，防手抖连点重复入队。
+  const [submitting, setSubmitting] = useState(false);
+  const [confirmOpen, setConfirmOpen] = useState(false);
+
+  // 超时解锁本地乐观锁:任务一旦进入队列,`generating` 会接力保持禁用;
+  // 若入队失败/被去重始终无活跃任务,超时也能解锁,避免按钮永久禁用。
+  useEffect(() => {
+    if (!submitting) return;
+    const id = setTimeout(() => setSubmitting(false), 6000);
+    return () => clearTimeout(id);
+  }, [submitting]);
+
+  const doGenerate = () => {
+    setSubmitting(true);
+    onGenerate?.();
+  };
+
+  const handleGenerateClick = () => {
+    if (confirmOnRegenerate && assetPath) {
+      setConfirmOpen(true);
+      return;
+    }
+    doGenerate();
+  };
 
   const assetFp = useProjectsStore((s) =>
     assetPath ? s.getAssetFingerprint(assetPath) : null,
@@ -188,8 +219,8 @@ export function MediaCard({
       {!hideGenerateButton && onGenerate && (
         <button
           type="button"
-          onClick={onGenerate}
-          disabled={generateDisabled || generating}
+          onClick={handleGenerateClick}
+          disabled={generateDisabled || generating || submitting}
           title={
             generateDisabled
               ? (generateDisabledHint ?? t("media_generate_video_disabled_hint"))
@@ -212,6 +243,19 @@ export function MediaCard({
           )}
         </button>
       )}
+
+      <ConfirmDialog
+        open={confirmOpen}
+        title={t("media_regenerate_confirm_title")}
+        description={t("media_regenerate_confirm_desc")}
+        confirmLabel={t("media_regenerate_confirm")}
+        tone="danger"
+        onConfirm={() => {
+          setConfirmOpen(false);
+          doGenerate();
+        }}
+        onCancel={() => setConfirmOpen(false)}
+      />
     </div>
   );
 }

@@ -347,6 +347,11 @@ class ConfigResolver:
         async with self._open_session() as (session, svc):
             return await self._resolve_all_provider_configs(svc, session)
 
+    async def oss_config(self) -> dict[str, str]:
+        """全局阿里云 OSS 配置。"""
+        async with self._open_session() as (session, svc):
+            return await svc.get_oss_config()
+
     async def reference_payload_limits(self, provider_id: str | None) -> tuple[int, int]:
         """解析参考上传副本的 (total_max_bytes, single_max_bytes)。
 

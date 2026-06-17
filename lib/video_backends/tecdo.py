@@ -8,20 +8,23 @@
   - 首帧 ``{type:image_url, imageUrl:{url}, role:first_frame}``,可选尾帧 ``role:last_frame``
   - 参考图 ``{type:image_url, imageUrl:{url}, role:reference_image}`` 可多张
 - 请求体含 ``model`` 字段(seedance2.0);``duration`` 为 int(4~15);``seed`` 可选
-- 图片是 URL:本地图先 multipart 上传 ``/uni-agency/openApi/v1/mediaAccountApplication/upload/file``
-  (``type=FILE``),取 ``data.s3Host + data.url`` 拼成完整 URL,再填进 ``imageUrl.url``
+- 图片是 URL:本地图先上传到阿里云 OSS(见 ``lib/oss_uploader``)换签名 URL,再填进
+  ``imageUrl.url``。钛动自带的上传接口需单独开通,故不走它。OSS 配置缺失时图生/参考生
+  视频 fail-loud(文生视频不受影响)。
 - 异步:create 返回 ``data.taskId`` → 轮询 ``GET /tecpower/ai/openapi/video/task?taskId=`` 至
   ``status=COMPLETED`` → ``data.videoUrl`` 下载;``data.actualAmount`` 为实际消耗金额(回报计费)
 """
 
 from __future__ import annotations
 
+import asyncio
 import logging
 from pathlib import Path
 
 import httpx
 
 from lib.logging_utils import format_kwargs_for_log
+from lib.oss_uploader import OSSConfig, OSSUploader
 from lib.providers import PROVIDER_TECDO
 from lib.retry import (
     DEFAULT_BACKOFF_SECONDS,
@@ -31,7 +34,6 @@ from lib.retry import (
     with_retry_async,
 )
 from lib.video_backends.base import (
-    IMAGE_MIME_TYPES,
     ResumeExpiredError,
     VideoCapabilities,
     VideoCapability,
@@ -52,7 +54,6 @@ DEFAULT_BASE_URL = "https://open-power.tec-do.cn"
 
 _CREATE_PATH = "/tecpower/ai/openapi/video/create"
 _QUERY_PATH = "/tecpower/ai/openapi/video/task"
-_UPLOAD_PATH = "/uni-agency/openApi/v1/mediaAccountApplication/upload/file"
 
 # actualAmount 货币:钛动为国内平台,按人民币记账。
 _ACTUAL_CURRENCY = "CNY"
@@ -87,6 +88,7 @@ class TecDoVideoBackend:
         base_url: str | None = None,
         model: str | None = None,
         http_timeout: float = 60.0,
+        oss_config: dict[str, str] | None = None,
     ) -> None:
         if not api_key:
             raise ValueError("TecDoVideoBackend 需要 api_key")
@@ -94,6 +96,8 @@ class TecDoVideoBackend:
         self._base_url = _normalize_base_url(base_url)
         self._model = model or DEFAULT_MODEL
         self._http_timeout = http_timeout
+        self._oss_config = OSSConfig.from_dict(oss_config)
+        self._uploader: OSSUploader | None = None
         self._capabilities: set[VideoCapability] = {
             VideoCapability.TEXT_TO_VIDEO,
             VideoCapability.IMAGE_TO_VIDEO,
@@ -128,8 +132,8 @@ class TecDoVideoBackend:
 
     async def generate(self, request: VideoGenerationRequest) -> VideoGenerationResult:
         duration = self._validate_duration(request.duration_seconds)
+        payload = await self._build_payload(request, duration)
         async with httpx.AsyncClient(timeout=self._http_timeout) as client:
-            payload = await self._build_payload(client, request, duration)
             logger.info(
                 "调用 %s 视频 API path=%s body=%s",
                 self.name,
@@ -163,26 +167,21 @@ class TecDoVideoBackend:
             )
         return duration_seconds
 
-    async def _build_payload(
-        self,
-        client: httpx.AsyncClient,
-        request: VideoGenerationRequest,
-        duration: int,
-    ) -> dict:
-        """构造单端点请求体:本地图先上传换 URL,按首尾帧/参考图拼 content[] role。"""
+    async def _build_payload(self, request: VideoGenerationRequest, duration: int) -> dict:
+        """构造单端点请求体:本地图先上传 OSS 换签名 URL,按首尾帧/参考图拼 content[] role。"""
         content: list[dict] = []
 
         # 参考图(可多张)→ role=reference_image
         reference_images = [Path(r) for r in (request.reference_images or []) if r]
         if reference_images:
-            for url in await self._upload_images(client, reference_images, limit=_MAX_REFERENCE_IMAGES):
+            for url in await self._upload_images(reference_images, limit=_MAX_REFERENCE_IMAGES):
                 content.append({"type": "image_url", "imageUrl": {"url": url}, "role": "reference_image"})
         # 否则首帧(可选尾帧)→ role=first_frame / last_frame
         elif request.start_image:
-            first_url = await self._upload_image(client, Path(request.start_image))
+            first_url = await self._upload_image(Path(request.start_image))
             content.append({"type": "image_url", "imageUrl": {"url": first_url}, "role": "first_frame"})
             if request.end_image and Path(request.end_image).is_file():
-                last_url = await self._upload_image(client, Path(request.end_image))
+                last_url = await self._upload_image(Path(request.end_image))
                 content.append({"type": "image_url", "imageUrl": {"url": last_url}, "role": "last_frame"})
 
         # 至少一个 text 内容
@@ -201,47 +200,35 @@ class TecDoVideoBackend:
             payload["seed"] = request.seed
         return payload
 
-    async def _upload_images(self, client: httpx.AsyncClient, paths: list[Path], *, limit: int) -> list[str]:
+    def _get_uploader(self) -> OSSUploader:
+        """惰性构造 OSS 上传器。未配置 OSS 时 fail-loud(图生/参考生视频依赖它)。"""
+        if self._uploader is None:
+            if not self._oss_config.is_complete:
+                raise RuntimeError(
+                    "钛动图生/参考生视频需要先在系统设置配置阿里云 OSS"
+                    "(endpoint / bucket / access_key_id / access_key_secret)"
+                )
+            self._uploader = OSSUploader(self._oss_config)
+        return self._uploader
+
+    async def _upload_images(self, paths: list[Path], *, limit: int) -> list[str]:
         if len(paths) > limit:
             logger.warning("钛动参考图数量 %d 超过上限 %d，截断", len(paths), limit)
             paths = paths[:limit]
-        return [await self._upload_image(client, p) for p in paths]
+        return [await self._upload_image(p) for p in paths]
 
-    @with_retry_async(
-        max_attempts=DEFAULT_MAX_ATTEMPTS,
-        backoff_seconds=DEFAULT_BACKOFF_SECONDS,
-        retry_if=should_retry_submit,
-    )
-    async def _upload_image(self, client: httpx.AsyncClient, path: Path) -> str:
-        """上传本地图到钛动,返回 ``s3Host + url`` 拼成的完整可访问 URL。
+    async def _upload_image(self, path: Path) -> str:
+        """上传本地图到 OSS,返回临时签名 URL。
 
-        fail-loud:图缺失/不可读 → VideoCapabilityError;上游 code != "0" → RuntimeError。
+        fail-loud:图缺失/不可读 → VideoCapabilityError;OSS 未配置 → RuntimeError。
         """
         if not path.is_file():
             raise VideoCapabilityError("video_start_image_unreadable", model=self._model, name=path.name)
+        uploader = self._get_uploader()
         try:
-            data = path.read_bytes()
+            return await asyncio.to_thread(uploader.upload_file, path)
         except OSError as exc:
             raise VideoCapabilityError("video_start_image_unreadable", model=self._model, name=path.name) from exc
-
-        mime = IMAGE_MIME_TYPES.get(path.suffix.lower(), "application/octet-stream")
-        resp = await client.post(
-            f"{self._base_url}{_UPLOAD_PATH}",
-            data={"type": "FILE"},
-            files={"file": (path.name, data, mime)},
-            headers={"X-App-Secret": self._api_key},
-        )
-        resp.raise_for_status()
-        body = resp.json()
-        if str(body.get("code")) != "0":
-            raise RuntimeError(f"钛动文件上传失败: code={body.get('code')} message={body.get('message')}")
-        data_obj = body.get("data") or {}
-        url = data_obj.get("url")
-        if not url:
-            raise RuntimeError(f"钛动上传返回体缺少 url: {body}")
-        if url.startswith("http://") or url.startswith("https://"):
-            return url
-        return f"{data_obj.get('s3Host', '')}{url}"
 
     # ── HTTP submit / poll / download ───────────────────────────────────
 

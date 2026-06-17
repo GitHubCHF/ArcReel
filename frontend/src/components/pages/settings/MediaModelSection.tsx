@@ -131,6 +131,26 @@ export function MediaModelSection() {
     "";
   const currentAudio = draft.video_generate_audio ?? settings.video_generate_audio ?? false;
 
+  const ossInputCls =
+    "w-full rounded-[8px] border border-hairline bg-bg-grad-a/55 px-3 py-2 text-[12.5px] text-text placeholder:text-text-4 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent";
+  const ossField = (
+    key: "oss_endpoint" | "oss_bucket" | "oss_access_key_id" | "oss_upload_prefix",
+    label: string,
+    placeholder: string,
+  ) => (
+    <div>
+      <div className="mb-1.5 font-mono text-[10px] font-bold uppercase tracking-[0.14em] text-text-4">{label}</div>
+      <input
+        type="text"
+        value={draft[key] ?? settings[key] ?? ""}
+        placeholder={placeholder}
+        onChange={(e) => setDraft((prev) => ({ ...prev, [key]: e.target.value }))}
+        className={ossInputCls}
+        aria-label={label}
+      />
+    </div>
+  );
+
   const emptyHint = (msg: string) => (
     <div className="rounded-[8px] border border-hairline-soft bg-bg-grad-a/45 px-3 py-2.5 text-[12px] text-text-3">
       {msg}
@@ -246,6 +266,34 @@ export function MediaModelSection() {
         ) : (
           emptyHint(t("no_text_providers_hint"))
         )}
+      </SectionCard>
+
+      {/* Object storage (OSS) */}
+      <SectionCard kicker="Object Storage" title={t("oss_title")} description={t("oss_desc")}>
+        <div className="space-y-3.5">
+          {ossField("oss_endpoint", t("oss_endpoint"), "oss-cn-hangzhou.aliyuncs.com")}
+          {ossField("oss_bucket", t("oss_bucket"), "my-bucket")}
+          {ossField("oss_access_key_id", t("oss_access_key_id"), "LTAI...")}
+          <div>
+            <div className="mb-1.5 font-mono text-[10px] font-bold uppercase tracking-[0.14em] text-text-4">
+              {t("oss_access_key_secret")}
+            </div>
+            <input
+              type="password"
+              autoComplete="off"
+              value={draft.oss_access_key_secret ?? ""}
+              placeholder={
+                settings.oss_access_key_secret.is_set
+                  ? (settings.oss_access_key_secret.masked ?? "••••")
+                  : t("oss_secret_placeholder")
+              }
+              onChange={(e) => setDraft((prev) => ({ ...prev, oss_access_key_secret: e.target.value }))}
+              className={ossInputCls}
+              aria-label={t("oss_access_key_secret")}
+            />
+          </div>
+          {ossField("oss_upload_prefix", t("oss_upload_prefix"), "arcreel/")}
+        </div>
       </SectionCard>
 
       {/* Footer */}

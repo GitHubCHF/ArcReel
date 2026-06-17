@@ -22,6 +22,11 @@ function makeConfigResponse(overrides?: Partial<GetSystemConfigResponse["setting
       claude_code_subagent_model: "",
       agent_session_cleanup_delay_seconds: 300,
       agent_max_concurrent_sessions: 5,
+      oss_endpoint: "",
+      oss_bucket: "",
+      oss_access_key_id: "",
+      oss_upload_prefix: "",
+      oss_access_key_secret: { is_set: false, masked: null },
       ...overrides,
     },
     options: {

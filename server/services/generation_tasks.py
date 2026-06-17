@@ -31,7 +31,7 @@ from lib.prompt_utils import (
     is_structured_video_prompt,
     video_prompt_to_yaml,
 )
-from lib.providers import PROVIDER_ARK, PROVIDER_GEMINI, PROVIDER_GROK, PROVIDER_OPENAI, PROVIDER_VIDU
+from lib.providers import PROVIDER_ARK, PROVIDER_GEMINI, PROVIDER_GROK, PROVIDER_OPENAI, PROVIDER_TECDO, PROVIDER_VIDU
 from lib.reference_compression import ReferencePayloadFloorError
 from lib.resource_paths import resource_relative_path
 from lib.storyboard_sequence import (
@@ -193,6 +193,9 @@ async def _get_or_create_video_backend(
         kwargs["video_model"] = effective_model
     else:
         await _fill_simple_provider_kwargs(backend_name, resolver, kwargs, effective_model)
+        # tecdo 图生/参考生视频需把本地图上传 OSS 换公网 URL，注入全局 OSS 配置。
+        if backend_name == PROVIDER_TECDO:
+            kwargs["oss_config"] = await resolver.oss_config()
 
     backend = create_backend(backend_name, **kwargs)
     _backend_cache[cache_key] = backend

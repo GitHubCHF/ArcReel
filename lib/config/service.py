@@ -201,6 +201,17 @@ class ConfigService:
         raw = await self._setting_repo.get("default_audio_backend", _DEFAULT_AUDIO_BACKEND)
         return self._parse_backend(raw, _DEFAULT_AUDIO_BACKEND)
 
+    async def get_oss_config(self) -> dict[str, str]:
+        """全局阿里云 OSS 配置（供需要本地图转公网 URL 的视频后端复用，如 tecdo）。"""
+        s = await self._setting_repo.get_all()
+        return {
+            "endpoint": s.get("oss_endpoint", ""),
+            "bucket": s.get("oss_bucket", ""),
+            "access_key_id": s.get("oss_access_key_id", ""),
+            "access_key_secret": s.get("oss_access_key_secret", ""),
+            "upload_prefix": s.get("oss_upload_prefix", ""),
+        }
+
     async def get_narration_voice(self) -> str:
         # 空白 setting 视为未配置，与项目级覆盖的 strip 语义一致，避免空音色进 TTS 请求
         raw = await self._setting_repo.get("narration_voice", "")

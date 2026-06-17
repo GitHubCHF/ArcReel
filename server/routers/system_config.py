@@ -192,6 +192,11 @@ class SystemConfigPatchRequest(BaseModel):
     text_backend_script: str | None = None
     text_backend_overview: str | None = None
     text_backend_style: str | None = None
+    oss_endpoint: str | None = None
+    oss_bucket: str | None = None
+    oss_access_key_id: str | None = None
+    oss_access_key_secret: str | None = None
+    oss_upload_prefix: str | None = None
 
 
 # Setting keys that map directly to string DB settings
@@ -210,6 +215,10 @@ _STRING_SETTINGS = (
     "text_backend_script",
     "text_backend_overview",
     "text_backend_style",
+    "oss_endpoint",
+    "oss_bucket",
+    "oss_access_key_id",
+    "oss_upload_prefix",
 )
 
 
@@ -264,6 +273,14 @@ async def get_system_config(
         "text_backend_script": all_s.get("text_backend_script") or "",
         "text_backend_overview": all_s.get("text_backend_overview") or "",
         "text_backend_style": all_s.get("text_backend_style") or "",
+        "oss_endpoint": all_s.get("oss_endpoint") or "",
+        "oss_bucket": all_s.get("oss_bucket") or "",
+        "oss_access_key_id": all_s.get("oss_access_key_id") or "",
+        "oss_upload_prefix": all_s.get("oss_upload_prefix") or "",
+        "oss_access_key_secret": {
+            "is_set": bool(all_s.get("oss_access_key_secret")),
+            "masked": mask_secret(all_s["oss_access_key_secret"]) if all_s.get("oss_access_key_secret") else None,
+        },
     }
 
     options = await _build_options(svc, session)
@@ -347,6 +364,11 @@ async def patch_system_config(
             await svc.set_setting("anthropic_api_key", str(value).strip())
         else:
             await svc.set_setting("anthropic_api_key", "")
+
+    # OSS access key secret (secret)
+    if "oss_access_key_secret" in patch:
+        value = patch["oss_access_key_secret"]
+        await svc.set_setting("oss_access_key_secret", str(value).strip() if value else "")
 
     # Integer settings with range validation
     _INT_SETTINGS_RANGES = {

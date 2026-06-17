@@ -156,6 +156,11 @@ class TestGetSystemConfig:
             "text_backend_script",
             "text_backend_overview",
             "text_backend_style",
+            "oss_endpoint",
+            "oss_bucket",
+            "oss_access_key_id",
+            "oss_upload_prefix",
+            "oss_access_key_secret",
         }
         assert set(settings.keys()) == expected_keys
 

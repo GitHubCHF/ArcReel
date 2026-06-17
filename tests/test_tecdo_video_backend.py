@@ -1,4 +1,4 @@
-"""TecDoVideoBackend 单元测试（mock httpx）。"""
+"""TecDoVideoBackend 单元测试（mock httpx + OSS uploader）。"""
 
 from __future__ import annotations
 
@@ -19,6 +19,26 @@ from lib.video_backends.base import (
 _BASE = "https://open-power.tec-do.cn"
 
 
+def _oss_cfg() -> dict[str, str]:
+    return {
+        "endpoint": "oss-cn-hangzhou.aliyuncs.com",
+        "bucket": "bkt",
+        "access_key_id": "id",
+        "access_key_secret": "sec",
+        "upload_prefix": "arcreel",
+    }
+
+
+class _FakeUploader:
+    """替身 OSSUploader：upload_file 按文件名返回稳定 URL，不触网。"""
+
+    def __init__(self, config, **_kw):  # noqa: ANN001
+        self.config = config
+
+    def upload_file(self, path: Path, *, key: str | None = None) -> str:
+        return f"https://oss.example.com/{path.name}"
+
+
 def _make_response(status_code: int, json_body: dict) -> MagicMock:
     resp = MagicMock()
     resp.status_code = status_code
@@ -31,10 +51,6 @@ def _make_http_error(status_code: int, message: str) -> httpx.HTTPStatusError:
     request = httpx.Request("GET", f"{_BASE}/tecpower/ai/openapi/video/task")
     response = httpx.Response(status_code, request=request, text=message)
     return httpx.HTTPStatusError(f"error '{status_code}'", request=request, response=response)
-
-
-def _upload_resp(s3_host: str = "https://cdn.tec-do.cn", url: str = "/img.png") -> MagicMock:
-    return _make_response(200, {"code": "0", "message": "success", "data": {"s3Host": s3_host, "url": url}})
 
 
 def _submit_resp(task_id: str = "task-1") -> MagicMock:
@@ -58,12 +74,15 @@ def _fake_download():
     return AsyncMock(side_effect=_fake)
 
 
-def _patches(mock_client, fake_download):
-    return (
+def _patches(mock_client, fake_download, *, with_oss: bool = False):
+    base = [
         patch("httpx.AsyncClient", return_value=mock_client),
         patch("lib.video_backends.tecdo._POLL_INTERVAL_SECONDS", 0.0),
         patch("lib.video_backends.tecdo.download_video", fake_download),
-    )
+    ]
+    if with_oss:
+        base.append(patch("lib.video_backends.tecdo.OSSUploader", _FakeUploader))
+    return base
 
 
 def _client(*, post_side=None, get_side=None) -> AsyncMock:
@@ -131,8 +150,11 @@ class TestContentDispatch:
         mock_client = _client(post_side=[_submit_resp()], get_side=[_query_resp("COMPLETED", "https://cdn/v.mp4")])
         fake_download = _fake_download()
 
-        p1, p2, p3 = _patches(mock_client, fake_download)
-        with p1, p2, p3:
+        with (
+            patch("httpx.AsyncClient", return_value=mock_client),
+            patch("lib.video_backends.tecdo._POLL_INTERVAL_SECONDS", 0.0),
+            patch("lib.video_backends.tecdo.download_video", fake_download),
+        ):
             from lib.video_backends.tecdo import TecDoVideoBackend
 
             b = TecDoVideoBackend(api_key="k", model="seedance2.0")
@@ -153,8 +175,11 @@ class TestContentDispatch:
 
     async def test_seed_forwarded_when_set(self, tmp_path: Path):
         mock_client = _client(post_side=[_submit_resp()], get_side=[_query_resp("COMPLETED", "https://cdn/v.mp4")])
-        p1, p2, p3 = _patches(mock_client, _fake_download())
-        with p1, p2, p3:
+        with (
+            patch("httpx.AsyncClient", return_value=mock_client),
+            patch("lib.video_backends.tecdo._POLL_INTERVAL_SECONDS", 0.0),
+            patch("lib.video_backends.tecdo.download_video", _fake_download()),
+        ):
             from lib.video_backends.tecdo import TecDoVideoBackend
 
             b = TecDoVideoBackend(api_key="k")
@@ -164,27 +189,21 @@ class TestContentDispatch:
 
     async def test_image_to_video_uploads_first_frame(self, tmp_path: Path):
         img = _img(tmp_path)
-        mock_client = _client(
-            post_side=[_upload_resp("https://cdn.tec-do.cn", "/first.png"), _submit_resp()],
-            get_side=[_query_resp("COMPLETED", "https://cdn/v.mp4")],
-        )
-        p1, p2, p3 = _patches(mock_client, _fake_download())
-        with p1, p2, p3:
+        mock_client = _client(post_side=[_submit_resp()], get_side=[_query_resp("COMPLETED", "https://cdn/v.mp4")])
+        for p in _patches(mock_client, _fake_download(), with_oss=True):
+            p.start()
+        try:
             from lib.video_backends.tecdo import TecDoVideoBackend
 
-            b = TecDoVideoBackend(api_key="k")
+            b = TecDoVideoBackend(api_key="k", oss_config=_oss_cfg())
             await b.generate(_req(tmp_path, start_image=img))
+        finally:
+            patch.stopall()
 
-        upload_call = mock_client.post.call_args_list[0]
-        assert upload_call.args[0] == f"{_BASE}/uni-agency/openApi/v1/mediaAccountApplication/upload/file"
-        assert upload_call.kwargs["data"] == {"type": "FILE"}
-        assert "files" in upload_call.kwargs
-        assert upload_call.kwargs["headers"]["X-App-Secret"] == "k"
-
-        content = mock_client.post.call_args_list[1].kwargs["json"]["content"]
+        content = mock_client.post.call_args_list[0].kwargs["json"]["content"]
         assert content[0] == {
             "type": "image_url",
-            "imageUrl": {"url": "https://cdn.tec-do.cn/first.png"},
+            "imageUrl": {"url": "https://oss.example.com/a.png"},
             "role": "first_frame",
         }
         assert content[-1] == {"type": "text", "text": "p"}
@@ -192,70 +211,45 @@ class TestContentDispatch:
 
     async def test_image_to_video_with_last_frame(self, tmp_path: Path):
         first, last = _img(tmp_path, "first.png"), _img(tmp_path, "last.png")
-        mock_client = _client(
-            post_side=[
-                _upload_resp("https://cdn.tec-do.cn", "/first.png"),
-                _upload_resp("https://cdn.tec-do.cn", "/last.png"),
-                _submit_resp(),
-            ],
-            get_side=[_query_resp("COMPLETED", "https://cdn/v.mp4")],
-        )
-        p1, p2, p3 = _patches(mock_client, _fake_download())
-        with p1, p2, p3:
+        mock_client = _client(post_side=[_submit_resp()], get_side=[_query_resp("COMPLETED", "https://cdn/v.mp4")])
+        for p in _patches(mock_client, _fake_download(), with_oss=True):
+            p.start()
+        try:
             from lib.video_backends.tecdo import TecDoVideoBackend
 
-            b = TecDoVideoBackend(api_key="k")
+            b = TecDoVideoBackend(api_key="k", oss_config=_oss_cfg())
             await b.generate(_req(tmp_path, start_image=first, end_image=last))
+        finally:
+            patch.stopall()
 
-        content = mock_client.post.call_args_list[2].kwargs["json"]["content"]
+        content = mock_client.post.call_args_list[0].kwargs["json"]["content"]
         roles = [(c.get("role"), c.get("imageUrl", {}).get("url")) for c in content if c["type"] == "image_url"]
         assert roles == [
-            ("first_frame", "https://cdn.tec-do.cn/first.png"),
-            ("last_frame", "https://cdn.tec-do.cn/last.png"),
+            ("first_frame", "https://oss.example.com/first.png"),
+            ("last_frame", "https://oss.example.com/last.png"),
         ]
 
     async def test_reference_to_video(self, tmp_path: Path):
         refs = [_img(tmp_path, f"r{i}.png") for i in range(3)]
-        mock_client = _client(
-            post_side=[
-                _upload_resp("https://cdn.tec-do.cn", "/r0.png"),
-                _upload_resp("https://cdn.tec-do.cn", "/r1.png"),
-                _upload_resp("https://cdn.tec-do.cn", "/r2.png"),
-                _submit_resp(),
-            ],
-            get_side=[_query_resp("COMPLETED", "https://cdn/v.mp4")],
-        )
-        p1, p2, p3 = _patches(mock_client, _fake_download())
-        with p1, p2, p3:
+        mock_client = _client(post_side=[_submit_resp()], get_side=[_query_resp("COMPLETED", "https://cdn/v.mp4")])
+        for p in _patches(mock_client, _fake_download(), with_oss=True):
+            p.start()
+        try:
             from lib.video_backends.tecdo import TecDoVideoBackend
 
-            b = TecDoVideoBackend(api_key="k")
+            b = TecDoVideoBackend(api_key="k", oss_config=_oss_cfg())
             await b.generate(_req(tmp_path, reference_images=refs))
+        finally:
+            patch.stopall()
 
-        content = mock_client.post.call_args_list[3].kwargs["json"]["content"]
+        content = mock_client.post.call_args_list[0].kwargs["json"]["content"]
         ref_urls = [c["imageUrl"]["url"] for c in content if c.get("role") == "reference_image"]
         assert ref_urls == [
-            "https://cdn.tec-do.cn/r0.png",
-            "https://cdn.tec-do.cn/r1.png",
-            "https://cdn.tec-do.cn/r2.png",
+            "https://oss.example.com/r0.png",
+            "https://oss.example.com/r1.png",
+            "https://oss.example.com/r2.png",
         ]
         assert content[-1] == {"type": "text", "text": "p"}
-
-    async def test_upload_absolute_url_not_prefixed(self, tmp_path: Path):
-        img = _img(tmp_path)
-        mock_client = _client(
-            post_side=[_upload_resp("https://cdn.tec-do.cn", "https://abs.example.com/x.png"), _submit_resp()],
-            get_side=[_query_resp("COMPLETED", "https://cdn/v.mp4")],
-        )
-        p1, p2, p3 = _patches(mock_client, _fake_download())
-        with p1, p2, p3:
-            from lib.video_backends.tecdo import TecDoVideoBackend
-
-            b = TecDoVideoBackend(api_key="k")
-            await b.generate(_req(tmp_path, start_image=img))
-
-        content = mock_client.post.call_args_list[1].kwargs["json"]["content"]
-        assert content[0]["imageUrl"]["url"] == "https://abs.example.com/x.png"
 
 
 class TestPollAndErrors:
@@ -269,8 +263,11 @@ class TestPollAndErrors:
             ],
         )
         fake_download = _fake_download()
-        p1, p2, p3 = _patches(mock_client, fake_download)
-        with p1, p2, p3:
+        with (
+            patch("httpx.AsyncClient", return_value=mock_client),
+            patch("lib.video_backends.tecdo._POLL_INTERVAL_SECONDS", 0.0),
+            patch("lib.video_backends.tecdo.download_video", fake_download),
+        ):
             from lib.video_backends.tecdo import TecDoVideoBackend
 
             b = TecDoVideoBackend(api_key="k")
@@ -289,8 +286,11 @@ class TestPollAndErrors:
             post_side=[_submit_resp()],
             get_side=[_query_resp("COMPLETED", "https://cdn/v.mp4", actual_amount=1.23)],
         )
-        p1, p2, p3 = _patches(mock_client, _fake_download())
-        with p1, p2, p3:
+        with (
+            patch("httpx.AsyncClient", return_value=mock_client),
+            patch("lib.video_backends.tecdo._POLL_INTERVAL_SECONDS", 0.0),
+            patch("lib.video_backends.tecdo.download_video", _fake_download()),
+        ):
             from lib.video_backends.tecdo import TecDoVideoBackend
 
             b = TecDoVideoBackend(api_key="k")
@@ -300,12 +300,12 @@ class TestPollAndErrors:
         assert result.actual_currency == "CNY"
 
     async def test_no_actual_amount_leaves_cost_none(self, tmp_path: Path):
-        mock_client = _client(
-            post_side=[_submit_resp()],
-            get_side=[_query_resp("COMPLETED", "https://cdn/v.mp4")],
-        )
-        p1, p2, p3 = _patches(mock_client, _fake_download())
-        with p1, p2, p3:
+        mock_client = _client(post_side=[_submit_resp()], get_side=[_query_resp("COMPLETED", "https://cdn/v.mp4")])
+        with (
+            patch("httpx.AsyncClient", return_value=mock_client),
+            patch("lib.video_backends.tecdo._POLL_INTERVAL_SECONDS", 0.0),
+            patch("lib.video_backends.tecdo.download_video", _fake_download()),
+        ):
             from lib.video_backends.tecdo import TecDoVideoBackend
 
             b = TecDoVideoBackend(api_key="k")
@@ -320,8 +320,11 @@ class TestPollAndErrors:
             get_side=[_make_response(200, {"data": {"status": "FAILED", "error": "upstream boom"}})],
         )
         fake_download = _fake_download()
-        p1, p2, p3 = _patches(mock_client, fake_download)
-        with p1, p2, p3:
+        with (
+            patch("httpx.AsyncClient", return_value=mock_client),
+            patch("lib.video_backends.tecdo._POLL_INTERVAL_SECONDS", 0.0),
+            patch("lib.video_backends.tecdo.download_video", fake_download),
+        ):
             from lib.video_backends.tecdo import TecDoVideoBackend
 
             b = TecDoVideoBackend(api_key="k")
@@ -337,30 +340,21 @@ class TestPollAndErrors:
             await b.generate(_req(tmp_path, duration_seconds=20))
         assert ei.value.code == "video_duration_not_supported"
 
-    async def test_upload_missing_image_raises(self, tmp_path: Path):
-        mock_client = _client(post_side=[], get_side=[])
-        p1, p2, p3 = _patches(mock_client, _fake_download())
-        with p1, p2, p3:
-            from lib.video_backends.tecdo import TecDoVideoBackend
+    async def test_missing_image_raises(self, tmp_path: Path):
+        from lib.video_backends.tecdo import TecDoVideoBackend
 
-            b = TecDoVideoBackend(api_key="k")
-            with pytest.raises(VideoCapabilityError) as ei:
-                await b.generate(_req(tmp_path, start_image=tmp_path / "missing.png"))
-            assert ei.value.code == "video_start_image_unreadable"
+        b = TecDoVideoBackend(api_key="k", oss_config=_oss_cfg())
+        with pytest.raises(VideoCapabilityError) as ei:
+            await b.generate(_req(tmp_path, start_image=tmp_path / "missing.png"))
+        assert ei.value.code == "video_start_image_unreadable"
 
-    async def test_upload_nonzero_code_raises(self, tmp_path: Path):
+    async def test_oss_not_configured_raises(self, tmp_path: Path):
         img = _img(tmp_path)
-        mock_client = _client()
-        mock_client.post = AsyncMock(
-            return_value=_make_response(200, {"code": "401", "message": "bad key", "data": None})
-        )
-        p1, p2, p3 = _patches(mock_client, _fake_download())
-        with p1, p2, p3, patch("lib.retry._compute_wait", lambda attempt, backoff: 0.0):
-            from lib.video_backends.tecdo import TecDoVideoBackend
+        from lib.video_backends.tecdo import TecDoVideoBackend
 
-            b = TecDoVideoBackend(api_key="k")
-            with pytest.raises(RuntimeError, match="文件上传失败"):
-                await b.generate(_req(tmp_path, start_image=img))
+        b = TecDoVideoBackend(api_key="k")  # 无 oss_config
+        with pytest.raises(RuntimeError, match="阿里云 OSS"):
+            await b.generate(_req(tmp_path, start_image=img))
 
     async def test_submit_4xx_fails_fast(self, tmp_path: Path):
         bad = _make_response(400, {"error": "bad"})
@@ -383,8 +377,11 @@ class TestResume:
     async def test_resume_polls_without_create(self, tmp_path: Path):
         mock_client = _client(get_side=[_query_resp("COMPLETED", "https://cdn/resumed.mp4")])
         fake_download = _fake_download()
-        p1, p2, p3 = _patches(mock_client, fake_download)
-        with p1, p2, p3:
+        with (
+            patch("httpx.AsyncClient", return_value=mock_client),
+            patch("lib.video_backends.tecdo._POLL_INTERVAL_SECONDS", 0.0),
+            patch("lib.video_backends.tecdo.download_video", fake_download),
+        ):
             from lib.video_backends.tecdo import TecDoVideoBackend
 
             b = TecDoVideoBackend(api_key="k")

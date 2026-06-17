@@ -17,6 +17,11 @@ export interface SystemConfigSettings {
   claude_code_subagent_model: string;
   agent_session_cleanup_delay_seconds: number;
   agent_max_concurrent_sessions: number;
+  oss_endpoint: string;
+  oss_bucket: string;
+  oss_access_key_id: string;
+  oss_upload_prefix: string;
+  oss_access_key_secret: { is_set: boolean; masked: string | null };
 }
 
 export interface SystemConfigOptions {
@@ -67,4 +72,9 @@ export interface SystemConfigPatch {
   claude_code_subagent_model?: string;
   agent_session_cleanup_delay_seconds?: number;
   agent_max_concurrent_sessions?: number;
+  oss_endpoint?: string;
+  oss_bucket?: string;
+  oss_access_key_id?: string;
+  oss_access_key_secret?: string;
+  oss_upload_prefix?: string;
 }

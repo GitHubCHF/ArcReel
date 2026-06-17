@@ -49,6 +49,7 @@ updates:
           - "Pillow"
           - "ffmpeg-python"
           - "pyjianyingdraft"
+          - "oss2"
       document-parsing:
         patterns:
           - "pdf-oxide"

@@ -59,7 +59,7 @@ _QUERY_PATH = "/tecpower/ai/openapi/video/task"
 _ACTUAL_CURRENCY = "CNY"
 
 _POLL_INTERVAL_SECONDS = 10.0
-_MIN_POLL_TIMEOUT_SECONDS = 600
+_MIN_POLL_TIMEOUT_SECONDS = 1200
 _POLL_TIMEOUT_PER_SECOND = 60
 
 # duration 合法值域(秒);seedance2.0 上游枚举为 4~15。

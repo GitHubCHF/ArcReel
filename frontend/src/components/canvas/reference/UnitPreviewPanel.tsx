@@ -23,6 +23,8 @@ export interface UnitPreviewPanelProps {
   /** Actual already-spent cost; rendered in the metadata block. */
   actualCost?: CostBreakdown;
   onGenerate?: (unitId: string) => void;
+  /** 以服务端为准实时查该单元是否已有成片(并顺带刷新)；返回 true 时点击生成先二次确认 */
+  onCheckHasVideo?: (unitId: string) => Promise<boolean>;
   /** 上传成片视频（替换该单元的 AI 生成视频）；未提供时不显示上传入口 */
   onUploadVideo?: (unitId: string, file: File) => void | Promise<void>;
   /** 上传进行中 */
@@ -45,6 +47,7 @@ export function UnitPreviewPanel({
   estimatedCost,
   actualCost,
   onGenerate,
+  onCheckHasVideo,
   onUploadVideo,
   uploadingVideo,
   onRestored,
@@ -57,6 +60,8 @@ export function UnitPreviewPanel({
   // 乐观本地锁(防点击→任务入队空窗内连点) + 重新生成二次确认
   const [submitting, setSubmitting] = useState(false);
   const [confirmOpen, setConfirmOpen] = useState(false);
+  // 点击后查服务端是否已有成片期间的置灰
+  const [checking, setChecking] = useState(false);
   useEffect(() => {
     if (!submitting) return;
     const id = setTimeout(() => setSubmitting(false), 6000);
@@ -91,9 +96,19 @@ export function UnitPreviewPanel({
     setSubmitting(true);
     onGenerate?.(unit.unit_id);
   };
-  const handleGenerateClick = () => {
-    // 已有成片时「重新生成」先二次确认,避免页面未同步时误重复生成、消耗额度
-    if (ready) {
+  const handleGenerateClick = async () => {
+    // 以服务端为准:点击时实时查该单元是否已有成片(并顺带刷新 UI),避免前端本地状态
+    // 过期导致漏弹确认而重复生成、消耗额度。无 onCheckHasVideo 时回退本地 ready。
+    setChecking(true);
+    let hasVideo = ready;
+    try {
+      if (onCheckHasVideo) hasVideo = await onCheckHasVideo(unit.unit_id);
+    } catch {
+      hasVideo = ready; // 查询失败降级回本地判断,避免卡住
+    } finally {
+      setChecking(false);
+    }
+    if (hasVideo) {
       setConfirmOpen(true);
       return;
     }
@@ -207,15 +222,15 @@ export function UnitPreviewPanel({
       {onGenerate && (
         <button
           type="button"
-          onClick={handleGenerateClick}
-          disabled={inFlight || submitting}
+          onClick={() => void handleGenerateClick()}
+          disabled={inFlight || submitting || checking}
           className={`focus-ring inline-flex items-center justify-center gap-2 rounded-lg px-3.5 py-2.5 text-sm font-semibold transition-colors ${
-            inFlight || submitting
+            inFlight || submitting || checking
               ? "cursor-not-allowed border border-[var(--color-hairline)] bg-[oklch(0.22_0.011_265_/_0.6)] text-[var(--color-text-3)]"
               : "text-[oklch(0.14_0_0)] [background:linear-gradient(180deg,var(--color-accent-2),var(--color-accent))] shadow-[inset_0_1px_0_oklch(1_0_0_/_0.3),0_4px_14px_-4px_var(--color-accent-glow)]"
           }`}
         >
-          {inFlight || submitting ? (
+          {inFlight || submitting || checking ? (
             <>
               <Loader2 className="h-3.5 w-3.5 animate-spin" aria-hidden="true" />
               <span>{t("reference_preview_generating")}</span>

@@ -259,6 +259,19 @@ export function ReferenceVideoCanvas({
   const onAdd = useCallback(() => void handleAdd(), [handleAdd]);
   const onGenerateVoid = useCallback((id: string) => void handleGenerate(id), [handleGenerate]);
 
+  // 以服务端为准:拉取权威 units 并刷新 store(同步 UI),返回该单元当前是否已有成片。
+  // 供 UnitPreviewPanel 在点击生成时调用,避免前端本地状态过期导致漏弹确认而重复生成。
+  const onCheckHasVideo = useCallback(
+    async (unitId: string): Promise<boolean> => {
+      await loadUnits(projectName, episode);
+      const fresh = useReferenceVideoStore
+        .getState()
+        .unitsByEpisode[referenceVideoCacheKey(projectName, episode)]?.find((u) => u.unit_id === unitId);
+      return Boolean(fresh?.generated_assets.video_clip);
+    },
+    [loadUnits, projectName, episode],
+  );
+
   const handlePromptChange = useCallback(
     (next: string) => {
       if (!selected) return;
@@ -780,6 +793,7 @@ export function ReferenceVideoCanvas({
                           estimatedCost={estimatedCost}
                           actualCost={actualCost}
                           onGenerate={onGenerateVoid}
+                          onCheckHasVideo={onCheckHasVideo}
                           onUploadVideo={handleUploadVideo}
                           uploadingVideo={uploadingUnitIds.has(selected.unit_id)}
                           onRestored={handleUnitsRefresh}
@@ -806,6 +820,7 @@ export function ReferenceVideoCanvas({
                   estimatedCost={estimatedCost}
                   actualCost={actualCost}
                   onGenerate={onGenerateVoid}
+                  onCheckHasVideo={onCheckHasVideo}
                   onUploadVideo={handleUploadVideo}
                   uploadingVideo={selected ? uploadingUnitIds.has(selected.unit_id) : false}
                   onRestored={handleUnitsRefresh}

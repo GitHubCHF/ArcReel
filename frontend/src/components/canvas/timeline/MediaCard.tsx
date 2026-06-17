@@ -82,6 +82,8 @@ export function MediaCard({
   // 桥接「点击 → 任务出现在 tasks 轮询」之间的窗口，防手抖连点重复入队。
   const [submitting, setSubmitting] = useState(false);
   const [confirmOpen, setConfirmOpen] = useState(false);
+  // 点击后查服务端是否已有成片期间的置灰
+  const [checking, setChecking] = useState(false);
 
   // 超时解锁本地乐观锁:任务一旦进入队列,`generating` 会接力保持禁用;
   // 若入队失败/被去重始终无活跃任务,超时也能解锁,避免按钮永久禁用。
@@ -96,10 +98,26 @@ export function MediaCard({
     onGenerate?.();
   };
 
-  const handleGenerateClick = () => {
-    if (confirmOnRegenerate && assetPath) {
-      setConfirmOpen(true);
-      return;
+  const handleGenerateClick = async () => {
+    // 以服务端为准:点击时实时查该资源是否已有成片版本,避免前端本地状态过期
+    // 导致漏弹确认而重复生成。仅视频卡(confirmOnRegenerate)做此检查。
+    if (confirmOnRegenerate) {
+      setChecking(true);
+      try {
+        const { versions } = await API.getVersions(projectName, resourceType, segmentId);
+        if (versions.length > 0) {
+          setConfirmOpen(true);
+          return;
+        }
+      } catch {
+        // 查询失败降级回本地判断,避免卡住
+        if (assetPath) {
+          setConfirmOpen(true);
+          return;
+        }
+      } finally {
+        setChecking(false);
+      }
     }
     doGenerate();
   };
@@ -219,8 +237,8 @@ export function MediaCard({
       {!hideGenerateButton && onGenerate && (
         <button
           type="button"
-          onClick={handleGenerateClick}
-          disabled={generateDisabled || generating || submitting}
+          onClick={() => void handleGenerateClick()}
+          disabled={generateDisabled || generating || submitting || checking}
           title={
             generateDisabled
               ? (generateDisabledHint ?? t("media_generate_video_disabled_hint"))

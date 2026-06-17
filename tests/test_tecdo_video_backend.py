@@ -73,6 +73,17 @@ def _query_resp(
     return _make_response(200, {"code": 200, "data": data})
 
 
+def _asset_create_resp(asset_id: str = "asset-1") -> MagicMock:
+    return _make_response(200, {"code": 0, "message": "success", "data": {"assetId": asset_id}})
+
+
+def _asset_get_resp(status: str = "Active", asset_id: str = "asset-1") -> MagicMock:
+    return _make_response(
+        200,
+        {"data": {"id": asset_id, "name": "ref", "url": "https://x/a.jpg", "assetType": "Image", "status": status}},
+    )
+
+
 def _fake_download():
     async def _fake(url: str, output_path: Path, *, timeout: int = 120) -> None:
         output_path.parent.mkdir(parents=True, exist_ok=True)
@@ -85,11 +96,24 @@ def _patches(mock_client, fake_download, *, with_oss: bool = False):
     base = [
         patch("httpx.AsyncClient", return_value=mock_client),
         patch("lib.video_backends.tecdo._POLL_INTERVAL_SECONDS", 0.0),
+        patch("lib.video_backends.tecdo._ASSET_POLL_INTERVAL_SECONDS", 0.0),
         patch("lib.video_backends.tecdo.download_video", fake_download),
     ]
     if with_oss:
         base.append(patch("lib.video_backends.tecdo.OSSUploader", _FakeUploader))
     return base
+
+
+async def _memory_session_factory():
+    """自带内存 sqlite session_factory(建表),用于资产缓存命中测试。"""
+    from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
+
+    from lib.db.base import Base
+
+    engine = create_async_engine("sqlite+aiosqlite:///:memory:")
+    async with engine.begin() as conn:
+        await conn.run_sync(Base.metadata.create_all)
+    return async_sessionmaker(engine, expire_on_commit=False), engine
 
 
 def _client(*, post_side=None, get_side=None) -> AsyncMock:
@@ -236,27 +260,90 @@ class TestContentDispatch:
             ("last_frame", "https://oss.example.com/last.png"),
         ]
 
-    async def test_reference_to_video(self, tmp_path: Path):
-        refs = [_img(tmp_path, f"r{i}.png") for i in range(3)]
-        mock_client = _client(post_side=[_submit_resp()], get_side=[_query_resp("completed", "https://cdn/v.mp4")])
+    async def test_reference_goes_through_asset_library(self, tmp_path: Path):
+        """参考图(角色集)→ OSS → asset/create → 轮询 Active → content 用 asset://{id}。"""
+        refs = [_img(tmp_path, f"r{i}.png") for i in range(2)]
+        mock_client = _client(
+            post_side=[
+                _asset_create_resp("asset-r0"),
+                _asset_get_resp("Active", "asset-r0"),
+                _asset_create_resp("asset-r1"),
+                _asset_get_resp("Active", "asset-r1"),
+                _submit_resp(),  # 视频 create 在所有资产就绪后
+            ],
+            get_side=[_query_resp("completed", "https://cdn/v.mp4")],
+        )
+        for p in _patches(mock_client, _fake_download(), with_oss=True):
+            p.start()
+        try:
+            from lib.video_backends.tecdo import TecDoVideoBackend
+
+            b = TecDoVideoBackend(api_key="k", oss_config=_oss_cfg())  # 无 session_factory → 不缓存
+            await b.generate(_req(tmp_path, reference_images=refs))
+        finally:
+            patch.stopall()
+
+        # 资产 create 端点
+        assert mock_client.post.call_args_list[0].args[0] == f"{_BASE}/tecpower/ai/openapi/asset/create"
+        assert mock_client.post.call_args_list[0].kwargs["json"]["assetType"] == "Image"
+        # 最后一个 post 是视频 create，content 用 asset://
+        video_call = mock_client.post.call_args_list[-1]
+        assert video_call.args[0] == f"{_BASE}/tecpower/ai/openapi/video/create"
+        content = video_call.kwargs["json"]["content"]
+        ref_urls = [c["imageUrl"]["url"] for c in content if c.get("role") == "reference_image"]
+        assert ref_urls == ["asset://asset-r0", "asset://asset-r1"]
+        assert content[-1] == {"type": "text", "text": "p"}
+
+    async def test_reference_asset_failed_raises(self, tmp_path: Path):
+        ref = _img(tmp_path, "r.png")
+        mock_client = _client(
+            post_side=[_asset_create_resp("asset-x"), _asset_get_resp("Failed", "asset-x")],
+            get_side=[],
+        )
         for p in _patches(mock_client, _fake_download(), with_oss=True):
             p.start()
         try:
             from lib.video_backends.tecdo import TecDoVideoBackend
 
             b = TecDoVideoBackend(api_key="k", oss_config=_oss_cfg())
-            await b.generate(_req(tmp_path, reference_images=refs))
+            with pytest.raises(RuntimeError, match="资产审核失败"):
+                await b.generate(_req(tmp_path, reference_images=[ref]))
         finally:
             patch.stopall()
 
+    async def test_reference_asset_cache_hit_skips_create(self, tmp_path: Path):
+        """缓存命中(Active)→ 跳过 asset/create，直接用 asset://{cached}。"""
+        from lib.db.repositories.provider_asset_repo import ProviderAssetRepository
+        from lib.providers import PROVIDER_TECDO
+        from lib.video_backends.tecdo import _sha256_file
+
+        ref = _img(tmp_path, "r.png")
+        content_hash = _sha256_file(ref)
+        factory, engine = await _memory_session_factory()
+        async with factory() as s:
+            await ProviderAssetRepository(s).upsert(
+                provider=PROVIDER_TECDO, content_hash=content_hash, asset_id="cached-1", status="Active"
+            )
+            await s.commit()
+
+        # 命中缓存后不应有任何 asset/create / asset/get，只剩视频 create + 查询
+        mock_client = _client(post_side=[_submit_resp()], get_side=[_query_resp("completed", "https://cdn/v.mp4")])
+        for p in _patches(mock_client, _fake_download(), with_oss=True):
+            p.start()
+        try:
+            from lib.video_backends.tecdo import TecDoVideoBackend
+
+            b = TecDoVideoBackend(api_key="k", oss_config=_oss_cfg(), session_factory=factory)
+            await b.generate(_req(tmp_path, reference_images=[ref]))
+        finally:
+            patch.stopall()
+            await engine.dispose()
+
+        # 只有 1 次 post（视频 create），没有资产相关调用
+        assert mock_client.post.call_count == 1
         content = mock_client.post.call_args_list[0].kwargs["json"]["content"]
         ref_urls = [c["imageUrl"]["url"] for c in content if c.get("role") == "reference_image"]
-        assert ref_urls == [
-            "https://oss.example.com/r0.png",
-            "https://oss.example.com/r1.png",
-            "https://oss.example.com/r2.png",
-        ]
-        assert content[-1] == {"type": "text", "text": "p"}
+        assert ref_urls == ["asset://cached-1"]
 
 
 class TestPollAndErrors:

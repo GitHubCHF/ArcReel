@@ -7,6 +7,7 @@ from lib.db.models.asset import Asset
 from lib.db.models.config import ProviderConfig, SystemSetting
 from lib.db.models.credential import ProviderCredential
 from lib.db.models.custom_provider import CustomProvider, CustomProviderModel
+from lib.db.models.provider_asset import ProviderAsset
 from lib.db.models.session import AgentSession
 from lib.db.models.task import Task, TaskEvent, WorkerLease
 from lib.db.models.user import User
@@ -26,4 +27,5 @@ __all__ = [
     "CustomProviderModel",
     "Asset",
     "AgentAnthropicCredential",
+    "ProviderAsset",
 ]

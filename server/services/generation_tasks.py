@@ -194,9 +194,13 @@ async def _get_or_create_video_backend(
         kwargs["video_model"] = effective_model
     else:
         await _fill_simple_provider_kwargs(backend_name, resolver, kwargs, effective_model)
-        # tecdo 图生/参考生视频需把本地图上传 OSS 换公网 URL，注入全局 OSS 配置。
+        # tecdo 图生/参考生视频需把本地图上传 OSS 换公网 URL，注入全局 OSS 配置；
+        # 参考图(角色集)走资产库且 assetId 持久化复用，注入 session_factory 供缓存读写。
         if backend_name == PROVIDER_TECDO:
+            from lib.db import async_session_factory
+
             kwargs["oss_config"] = await resolver.oss_config()
+            kwargs["session_factory"] = async_session_factory
 
     backend = create_backend(backend_name, **kwargs)
     _backend_cache[cache_key] = backend

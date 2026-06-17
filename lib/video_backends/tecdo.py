@@ -18,14 +18,19 @@
 from __future__ import annotations
 
 import asyncio
+import hashlib
 import logging
 from pathlib import Path
+from typing import TYPE_CHECKING
 
 import httpx
 
 from lib.logging_utils import format_kwargs_for_log
 from lib.oss_uploader import OSSConfig, OSSUploader
 from lib.providers import PROVIDER_TECDO
+
+if TYPE_CHECKING:
+    from sqlalchemy.ext.asyncio import async_sessionmaker
 from lib.retry import (
     DEFAULT_BACKOFF_SECONDS,
     DEFAULT_MAX_ATTEMPTS,
@@ -54,6 +59,8 @@ DEFAULT_BASE_URL = "https://open-power.tec-do.cn"
 
 _CREATE_PATH = "/tecpower/ai/openapi/video/create"
 _QUERY_PATH = "/tecpower/ai/openapi/video/task"
+_ASSET_CREATE_PATH = "/tecpower/ai/openapi/asset/create"
+_ASSET_GET_PATH = "/tecpower/ai/openapi/asset/get"
 
 # actualAmount 货币:钛动为国内平台,按人民币记账。
 _ACTUAL_CURRENCY = "CNY"
@@ -61,6 +68,10 @@ _ACTUAL_CURRENCY = "CNY"
 _POLL_INTERVAL_SECONDS = 10.0
 _MIN_POLL_TIMEOUT_SECONDS = 1200
 _POLL_TIMEOUT_PER_SECOND = 60
+
+# 资产库轮询(Processing→Active):图片资产处理通常很快,180s 足够。
+_ASSET_POLL_INTERVAL_SECONDS = 3.0
+_ASSET_POLL_TIMEOUT_SECONDS = 180.0
 
 # duration 合法值域(秒);seedance2.0 上游枚举为 4~15。
 _MIN_DURATION = 4
@@ -89,6 +100,7 @@ class TecDoVideoBackend:
         model: str | None = None,
         http_timeout: float = 60.0,
         oss_config: dict[str, str] | None = None,
+        session_factory: async_sessionmaker | None = None,
     ) -> None:
         if not api_key:
             raise ValueError("TecDoVideoBackend 需要 api_key")
@@ -98,6 +110,8 @@ class TecDoVideoBackend:
         self._http_timeout = http_timeout
         self._oss_config = OSSConfig.from_dict(oss_config)
         self._uploader: OSSUploader | None = None
+        # 资产库 assetId 缓存读写需要 DB；非 worker 路径(测试/直生)可不传,降级为不缓存。
+        self._session_factory = session_factory
         self._capabilities: set[VideoCapability] = {
             VideoCapability.TEXT_TO_VIDEO,
             VideoCapability.IMAGE_TO_VIDEO,
@@ -132,8 +146,8 @@ class TecDoVideoBackend:
 
     async def generate(self, request: VideoGenerationRequest) -> VideoGenerationResult:
         duration = self._validate_duration(request.duration_seconds)
-        payload = await self._build_payload(request, duration)
         async with httpx.AsyncClient(timeout=self._http_timeout) as client:
+            payload = await self._build_payload(client, request, duration)
             logger.info(
                 "调用 %s 视频 API path=%s body=%s",
                 self.name,
@@ -167,16 +181,20 @@ class TecDoVideoBackend:
             )
         return duration_seconds
 
-    async def _build_payload(self, request: VideoGenerationRequest, duration: int) -> dict:
-        """构造单端点请求体:本地图先上传 OSS 换签名 URL,按首尾帧/参考图拼 content[] role。"""
+    async def _build_payload(self, client: httpx.AsyncClient, request: VideoGenerationRequest, duration: int) -> dict:
+        """构造单端点请求体,按首尾帧/参考图拼 content[] role。
+
+        - 参考图(角色集)→ 走资产库:OSS 换公网 URL → 登记资产过审 → ``asset://{id}``(按内容哈希缓存复用)
+        - 首尾帧 → OSS 直传签名 URL
+        """
         content: list[dict] = []
 
-        # 参考图(可多张)→ role=reference_image
+        # 参考图(可多张)→ role=reference_image,走资产库以通过真人/敏感审核
         reference_images = [Path(r) for r in (request.reference_images or []) if r]
         if reference_images:
-            for url in await self._upload_images(reference_images, limit=_MAX_REFERENCE_IMAGES):
+            for url in await self._resolve_reference_assets(client, reference_images, limit=_MAX_REFERENCE_IMAGES):
                 content.append({"type": "image_url", "imageUrl": {"url": url}, "role": "reference_image"})
-        # 否则首帧(可选尾帧)→ role=first_frame / last_frame
+        # 否则首帧(可选尾帧)→ role=first_frame / last_frame,OSS 直传
         elif request.start_image:
             first_url = await self._upload_image(Path(request.start_image))
             content.append({"type": "image_url", "imageUrl": {"url": first_url}, "role": "first_frame"})
@@ -211,11 +229,105 @@ class TecDoVideoBackend:
             self._uploader = OSSUploader(self._oss_config)
         return self._uploader
 
-    async def _upload_images(self, paths: list[Path], *, limit: int) -> list[str]:
+    # ── 参考图 → 资产库(角色集) ────────────────────────────────────────
+
+    async def _resolve_reference_assets(self, client: httpx.AsyncClient, paths: list[Path], *, limit: int) -> list[str]:
         if len(paths) > limit:
             logger.warning("钛动参考图数量 %d 超过上限 %d，截断", len(paths), limit)
             paths = paths[:limit]
-        return [await self._upload_image(p) for p in paths]
+        return [await self._resolve_reference_asset(client, p) for p in paths]
+
+    async def _resolve_reference_asset(self, client: httpx.AsyncClient, path: Path) -> str:
+        """参考图(角色集)→ ``asset://{assetId}``。
+
+        按图片内容哈希持久化复用:命中且 Active 直接返回,跳过所有网络调用。
+        未命中则 OSS 换公网 URL → asset/create 登记 → 轮询 Active → 写缓存。
+        """
+        if not path.is_file():
+            raise VideoCapabilityError("video_start_image_unreadable", model=self._model, name=path.name)
+        content_hash = await asyncio.to_thread(_sha256_file, path)
+
+        cached = await self._get_cached_asset(content_hash)
+        if cached is not None:
+            logger.info("钛动资产缓存命中: hash=%s asset_id=%s", content_hash[:12], cached)
+            return f"asset://{cached}"
+
+        oss_url = await self._upload_image(path)
+        asset_id = await self._create_asset(client, oss_url, name=path.name)
+        logger.info("钛动资产已创建,等待过审: asset_id=%s", asset_id)
+        await self._wait_asset_active(client, asset_id)
+        await self._save_cached_asset(content_hash, asset_id)
+        return f"asset://{asset_id}"
+
+    @with_retry_async(
+        max_attempts=DEFAULT_MAX_ATTEMPTS,
+        backoff_seconds=DEFAULT_BACKOFF_SECONDS,
+        retry_if=should_retry_submit,
+    )
+    async def _create_asset(self, client: httpx.AsyncClient, url: str, *, name: str) -> str:
+        resp = await client.post(
+            f"{self._base_url}{_ASSET_CREATE_PATH}",
+            json={"url": url, "assetType": "Image", "name": name},
+            headers=self._json_headers(),
+        )
+        resp.raise_for_status()
+        body = resp.json()
+        if str(body.get("code")) != "0":
+            raise RuntimeError(f"钛动资产创建失败: code={body.get('code')} message={body.get('message')}")
+        asset_id = (body.get("data") or {}).get("assetId")
+        if not asset_id:
+            raise RuntimeError(f"钛动资产创建返回缺少 assetId: {body}")
+        return asset_id
+
+    async def _wait_asset_active(self, client: httpx.AsyncClient, asset_id: str) -> None:
+        async def _poll() -> dict:
+            resp = await client.post(
+                f"{self._base_url}{_ASSET_GET_PATH}",
+                json={"assetId": asset_id},
+                headers=self._json_headers(),
+            )
+            resp.raise_for_status()
+            return resp.json().get("data") or {}
+
+        await poll_with_retry(
+            poll_fn=_poll,
+            is_done=lambda s: (s.get("status") or "").upper() == "ACTIVE",
+            is_failed=lambda s: (
+                f"钛动资产审核失败(可能含真人/敏感内容): asset_id={asset_id}"
+                if (s.get("status") or "").upper() == "FAILED"
+                else None
+            ),
+            poll_interval=_ASSET_POLL_INTERVAL_SECONDS,
+            max_wait=_ASSET_POLL_TIMEOUT_SECONDS,
+            retry_if=should_retry_poll,
+            label="TecDo-Asset",
+        )
+
+    async def _get_cached_asset(self, content_hash: str) -> str | None:
+        """查持久化缓存:返回 Active 资产的 assetId,否则 None(含无 DB 时)。"""
+        if self._session_factory is None:
+            return None
+        from lib.db.repositories.provider_asset_repo import ProviderAssetRepository
+
+        async with self._session_factory() as session:
+            row = await ProviderAssetRepository(session).get(PROVIDER_TECDO, content_hash)
+            if row is not None and row.status.upper() == "ACTIVE":
+                return row.asset_id
+        return None
+
+    async def _save_cached_asset(self, content_hash: str, asset_id: str) -> None:
+        if self._session_factory is None:
+            return
+        from lib.db.repositories.provider_asset_repo import ProviderAssetRepository
+
+        async with self._session_factory() as session:
+            await ProviderAssetRepository(session).upsert(
+                provider=PROVIDER_TECDO,
+                content_hash=content_hash,
+                asset_id=asset_id,
+                status="Active",
+            )
+            await session.commit()
 
     async def _upload_image(self, path: Path) -> str:
         """上传本地图到 OSS,返回临时签名 URL。
@@ -338,3 +450,12 @@ def _extract_failure(state: dict) -> str | None:
         return None
     msg = state.get("error") or "unknown error"
     return f"钛动视频生成失败: {msg}"
+
+
+def _sha256_file(path: Path) -> str:
+    """计算文件 sha256(分块读,适配大图)。同步阻塞,异步调用方用 to_thread 包裹。"""
+    h = hashlib.sha256()
+    with path.open("rb") as f:
+        for chunk in iter(lambda: f.read(1024 * 1024), b""):
+            h.update(chunk)
+    return h.hexdigest()

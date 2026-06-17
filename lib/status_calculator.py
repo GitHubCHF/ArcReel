@@ -6,9 +6,25 @@
 """
 
 import logging
-from pathlib import Path
+
+from lib.path_safety import safe_exists
+from lib.script_models import SCRIPT_SHAPES
 
 logger = logging.getLogger(__name__)
+
+# 缺 duration_seconds 时按 content_mode 取的兜底时长（秒）。
+# narration/drama 沿用历史默认；ad 没有单镜头时长偏好（按 target_duration 预算
+# 逐镜头规划），缺失按 0 计入，避免杜撰值污染与目标总时长的对照。
+_FALLBACK_ITEM_DURATIONS: dict[str, int] = {"narration": 4, "drama": 8, "ad": 0}
+
+# 剧本缺失时按 content_mode 探测的 step1 草稿文件名。ad 不走拆分中间稿
+# （brief 不经 source_loader），显式 None 表示无草稿可探测；未知值沿用历史
+# 兜底落 drama 草稿名。
+_DRAFT_FILENAMES: dict[str, str | None] = {
+    "narration": "step1_segments.md",
+    "drama": "step1_normalized_script.md",
+    "ad": None,
+}
 
 
 class StatusCalculator:
@@ -27,28 +43,26 @@ class StatusCalculator:
     def _select_content_mode_and_items(cls, script: dict) -> tuple[str, list[dict]]:
         """返回 ``(分派标签, items)``。
 
-        分派标签 ``"narration" | "drama" | "reference_video"`` 给下游分派使用：
-        ``generation_mode == "reference_video"`` 优先；否则按 content_mode 选 segments
-        或 scenes；都缺失时按主结构鸭子类型兜底（兼容老脚本未写 content_mode 的情况）。
-        参考视频集判定不再回退到 ``content_mode == "reference_video"``——新数据
-        已不可能产生该值。
+        分派标签 ``"narration" | "drama" | "ad" | "reference_video"`` 给下游分派使用：
+        ``generation_mode == "reference_video"`` 优先；否则按 content_mode 选对应
+        剧本形状（SCRIPT_SHAPES）；都缺失时按主结构鸭子类型兜底（兼容老脚本未写
+        content_mode 的情况）。参考视频集判定不再回退到
+        ``content_mode == "reference_video"``——新数据已不可能产生该值。
         """
         content_mode = script.get("content_mode")
         generation_mode = script.get("generation_mode")
         if generation_mode == "reference_video":
             return "reference_video", script.get("video_units") or []
-        if content_mode in {"narration", "drama"}:
-            if content_mode == "narration" and isinstance(script.get("segments"), list):
-                return "narration", script.get("segments", [])
-            if content_mode == "drama" and isinstance(script.get("scenes"), list):
-                return "drama", script.get("scenes", [])
+        if content_mode in SCRIPT_SHAPES:
+            items = script.get(SCRIPT_SHAPES[content_mode].items_key)
+            if isinstance(items, list):
+                return content_mode, items
 
-        if isinstance(script.get("segments"), list):
-            return "narration", script.get("segments", [])
-        if isinstance(script.get("scenes"), list):
-            return "drama", script.get("scenes", [])
+        for mode, shape in SCRIPT_SHAPES.items():
+            if isinstance(script.get(shape.items_key), list):
+                return mode, script.get(shape.items_key, [])
 
-        return ("narration" if content_mode not in {"narration", "drama"} else content_mode), []
+        return ("narration" if content_mode not in SCRIPT_SHAPES else content_mode), []
 
     def calculate_episode_stats(self, project_name: str, script: dict) -> dict:
         """计算单集的统计信息 — 按 content_mode 分派。"""
@@ -57,7 +71,7 @@ class StatusCalculator:
         if content_mode == "reference_video":
             return self._calculate_reference_video_stats(items)
 
-        default_duration = 4 if content_mode == "narration" else 8
+        default_duration = _FALLBACK_ITEM_DURATIONS[content_mode]
         storyboard_done = sum(1 for i in items if i.get("generated_assets", {}).get("storyboard_image"))
         video_done = sum(1 for i in items if i.get("generated_assets", {}).get("video_clip"))
         total = len(items)
@@ -101,17 +115,6 @@ class StatusCalculator:
             "videos": {"total": total, "completed": video_done},
         }
 
-    @staticmethod
-    def _safe_exists(base: Path, rel_path: str) -> bool:
-        """检查 rel_path 是否为 base 目录内的合法相对路径且文件存在（防止路径穿越）"""
-        if not rel_path:
-            return False
-        try:
-            full = (base / rel_path).resolve()
-            return full.is_relative_to(base.resolve()) and full.exists()
-        except (OSError, ValueError):
-            return False
-
     def _load_episode_script(
         self,
         project_name: str,
@@ -138,7 +141,9 @@ class StatusCalculator:
                 safe_num = int(episode_num)
             except (ValueError, TypeError):
                 return "none", None
-            draft_filename = "step1_segments.md" if content_mode == "narration" else "step1_normalized_script.md"
+            draft_filename = _DRAFT_FILENAMES.get(content_mode, _DRAFT_FILENAMES["drama"])
+            if draft_filename is None:
+                return "none", None
             draft_file = project_dir / f"drafts/episode_{safe_num}/{draft_filename}"
             return ("segmented" if draft_file.exists() else "none"), None
         except ValueError as e:
@@ -237,6 +242,12 @@ class StatusCalculator:
         content_mode = project.get("content_mode", "narration")
         episodes_stats = []
         for ep in project.get("episodes", []):
+            # 账本标 stale 的集（重排后原文范围已失效）：读时状态回退为待预处理，
+            # 驱动重做流程；剧本/媒体产物不删除，重做沿现有覆盖/版本机制替换。
+            if ep.get("ledger_status") == "stale":
+                episodes_stats.append(self._make_fallback_ep_stats("none"))
+                continue
+
             script_file = ep.get("script_file", "")
             episode_num = ep.get("episode", 0)
 
@@ -286,17 +297,17 @@ class StatusCalculator:
         # 角色统计
         chars = project.get("characters", {})
         chars_total = len(chars)
-        chars_done = sum(1 for c in chars.values() if self._safe_exists(project_dir, c.get("character_sheet", "")))
+        chars_done = sum(1 for c in chars.values() if safe_exists(project_dir, c.get("character_sheet", "")))
 
         # 场景统计
         scenes = project.get("scenes", {})
         scenes_total = len(scenes)
-        scenes_done = sum(1 for s in scenes.values() if self._safe_exists(project_dir, s.get("scene_sheet", "")))
+        scenes_done = sum(1 for s in scenes.values() if safe_exists(project_dir, s.get("scene_sheet", "")))
 
         # 道具统计
         props = project.get("props", {})
         props_total = len(props)
-        props_done = sum(1 for p in props.values() if self._safe_exists(project_dir, p.get("prop_sheet", "")))
+        props_done = sum(1 for p in props.values() if safe_exists(project_dir, p.get("prop_sheet", "")))
 
         # 每集状态：优先使用预加载数据，否则自行加载
         if _preloaded_episodes_stats is not None:
@@ -359,7 +370,8 @@ class StatusCalculator:
             注入计算字段后的剧本数据
         """
         content_mode, items = self._select_content_mode_and_items(script)
-        default_duration = 4 if content_mode == "narration" else 8
+        # reference_video 标签不在表内，沿用历史 else 兜底值 8
+        default_duration = _FALLBACK_ITEM_DURATIONS.get(content_mode, 8)
 
         total_duration = sum(i.get("duration_seconds", default_duration) for i in items)
 
@@ -390,7 +402,8 @@ class StatusCalculator:
                     elif kind == "prop":
                         props_set.add(name)
         else:
-            char_field = "characters_in_segment" if content_mode == "narration" else "characters_in_scene"
+            # 此分支 content_mode 必为 SCRIPT_SHAPES 注册模式（_select 已归一）
+            char_field = SCRIPT_SHAPES[content_mode].chars_field
             for item in items:
                 chars_set.update(item.get(char_field, []))
                 scenes_set.update(item.get("scenes", []))

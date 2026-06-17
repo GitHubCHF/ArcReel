@@ -64,6 +64,14 @@ class CostEstimationService:
             except Exception:
                 generate_audio = False
 
+            # 旁白配音（TTS）模型：project 覆盖 > 全局默认 > auto-resolve；
+            # 未配置任何 audio 供应商时回落 unknown，该维度预估为空
+            try:
+                resolved_audio = await r.resolve_audio_backend(project_data, None)
+                audio_provider, audio_model = resolved_audio.provider_id, resolved_audio.model_id
+            except Exception:
+                audio_provider, audio_model = "unknown", "unknown"
+
         # 项目级视频配置覆盖
         # 优先读新格式 video_backend（"provider_id/model_id"），兼容旧 video_provider 字段
         project_video_backend = project_data.get("video_backend") or ""
@@ -104,7 +112,8 @@ class CostEstimationService:
         elif isinstance(raw_ar, dict):
             aspect_ratio = raw_ar.get("storyboards", "9:16")
         else:
-            aspect_ratio = "9:16" if project_data.get("content_mode", "narration") == "narration" else "16:9"
+            # narration/ad 默认竖屏，drama（含未知值的历史兜底）默认横屏
+            aspect_ratio = "9:16" if project_data.get("content_mode", "narration") in {"narration", "ad"} else "16:9"
 
         # 预计算图片单价
         image_unit_cost: tuple[float, str] | None = None
@@ -194,6 +203,7 @@ class CostEstimationService:
 
                 est_image: CostBreakdown = {}
                 est_video: CostBreakdown = {}
+                est_audio: CostBreakdown = {}
 
                 if generation_mode == "grid" and seg_id in grid_cost_per_segment:
                     cost_amount, cost_currency = grid_cost_per_segment[seg_id]
@@ -214,29 +224,47 @@ class CostEstimationService:
                 except Exception:
                     logger.debug("无法计算 video 预估 for %s", seg_id, exc_info=True)
 
+                # 旁白配音按 novel_text 字符数估价（仅说书模式 segment 携带原文）
+                novel_text = seg.get("novel_text")
+                narration_chars = len(novel_text.strip()) if isinstance(novel_text, str) else 0
+                if narration_chars:
+                    try:
+                        audio_amount, audio_currency = cost_calculator.calculate_cost(
+                            provider=audio_provider,
+                            call_type="audio",
+                            model=audio_model,
+                            usage_tokens=narration_chars,
+                        )
+                        _add_cost(est_audio, audio_amount, audio_currency)
+                    except Exception:
+                        logger.debug("无法计算 audio 预估 for %s", seg_id, exc_info=True)
+
                 seg_actual = actual_by_segment.get(seg_id, {})
                 act_image: CostBreakdown = seg_actual.get("image", {})
                 if seg_id in grid_actual_per_scene:
                     act_image = _merge_breakdowns(act_image, grid_actual_per_scene[seg_id])
                 act_video: CostBreakdown = seg_actual.get("video", {})
+                act_audio: CostBreakdown = seg_actual.get("audio", {})
 
                 segments_result.append(
                     {
                         "segment_id": seg_id,
                         "duration_seconds": duration,
-                        "estimate": {"image": est_image, "video": est_video},
-                        "actual": {"image": act_image, "video": act_video},
+                        "estimate": {"image": est_image, "video": est_video, "audio": est_audio},
+                        "actual": {"image": act_image, "video": act_video, "audio": act_audio},
                     }
                 )
 
-                for cost_type in ("image", "video"):
+                seg_est_by_type = {"image": est_image, "video": est_video, "audio": est_audio}
+                seg_act_by_type = {"image": act_image, "video": act_video, "audio": act_audio}
+                for cost_type in ("image", "video", "audio"):
                     ep_est[cost_type] = _merge_breakdowns(
                         ep_est.get(cost_type, {}),
-                        {"image": est_image, "video": est_video}[cost_type],
+                        seg_est_by_type[cost_type],
                     )
                     ep_act[cost_type] = _merge_breakdowns(
                         ep_act.get(cost_type, {}),
-                        {"image": act_image, "video": act_video}[cost_type],
+                        seg_act_by_type[cost_type],
                     )
 
             episodes_result.append(
@@ -248,7 +276,7 @@ class CostEstimationService:
                 }
             )
 
-            for cost_type in ("image", "video"):
+            for cost_type in ("image", "video", "audio"):
                 proj_est[cost_type] = _merge_breakdowns(
                     proj_est.get(cost_type, {}),
                     ep_est.get(cost_type, {}),
@@ -258,9 +286,9 @@ class CostEstimationService:
                     ep_act.get(cost_type, {}),
                 )
 
-        # Project-level actual costs (characters/scenes/props 三类资产图 —— segment_id is null)
+        # Project-level actual costs (characters/scenes/props/products 资产图 —— segment_id is null)
         project_image_by_type = await self._tracker.get_project_image_costs_by_asset_type(project_name)
-        for asset_type in ("characters", "scenes", "props"):
+        for asset_type in ("characters", "scenes", "props", "products"):
             bucket = project_image_by_type.get(asset_type)
             if bucket:
                 proj_act[asset_type] = bucket
@@ -270,6 +298,7 @@ class CostEstimationService:
             "models": {
                 "image": {"provider": image_provider, "model": image_model},
                 "video": {"provider": video_provider, "model": video_model},
+                "audio": {"provider": audio_provider, "model": audio_model},
             },
             "episodes": episodes_result,
             "project_totals": {"estimate": proj_est, "actual": proj_act},

@@ -14,10 +14,11 @@ from pathlib import Path
 
 from lib.project_migrations.v0_to_v1_clues_to_scenes_props import migrate_v0_to_v1
 from lib.project_migrations.v1_to_v2_normalize_providers import migrate_v1_to_v2
+from lib.project_migrations.v2_to_v3_episode_ledger import migrate_v2_to_v3
 
 logger = logging.getLogger(__name__)
 
-CURRENT_SCHEMA_VERSION = 2
+CURRENT_SCHEMA_VERSION = 3
 
 MIGRATORS: dict[int, Callable[[Path], None]] = {}
 
@@ -45,10 +46,18 @@ def _load_schema_version(project_dir: Path) -> int:
         return -1  # 跳过非项目目录
     try:
         data = json.loads(pj.read_text(encoding="utf-8"))
-    except Exception:
-        logger.warning("project.json 损坏，跳过：%s", project_dir)
+        raw_version = data.get("schema_version")
+        if raw_version is None:
+            return 0  # 仅字段缺失或显式 null 视为旧项目（v0）
+        if isinstance(raw_version, bool):
+            # bool 是 int 子类：int(True) == 1 会把损坏值静默当 v1
+            raise ValueError(f"schema_version 不可解析: {raw_version!r}")
+        # int 解析留在 try 内：其余不可解析值（空串/非数字串）与 JSON 损坏
+        # 同口径跳过——不当 v0 重跑迁移，也不让单个损坏项目中断整个迁移循环
+        return int(raw_version)
+    except Exception as exc:
+        logger.warning("project.json 损坏或 schema_version 不可解析，跳过：%s（%s）", project_dir, exc)
         return -1
-    return int(data.get("schema_version", 0))
 
 
 def _backup_project_json(project_dir: Path, from_version: int) -> None:
@@ -171,3 +180,4 @@ def cleanup_stale_backups(projects_root: Path, max_age_days: int = 7) -> None:
 # 注册迁移器（顶部 import，此处仅赋值）
 MIGRATORS[0] = migrate_v0_to_v1
 MIGRATORS[1] = migrate_v1_to_v2
+MIGRATORS[2] = migrate_v2_to_v3

@@ -4,6 +4,7 @@ import { Router } from "wouter";
 import { memoryLocation } from "wouter/memory-location";
 import { API } from "@/api";
 import { useAppStore } from "@/stores/app-store";
+import { useConfigStatusStore } from "@/stores/config-status-store";
 import { useProjectsStore } from "@/stores/projects-store";
 import { StudioCanvasRouter } from "@/components/canvas/StudioCanvasRouter";
 import type { EpisodeScript, ProjectData } from "@/types";
@@ -24,6 +25,8 @@ vi.mock("./timeline/TimelineCanvas", () => ({
     onUpdatePrompt,
     onGenerateStoryboard,
     onGenerateVideo,
+    onGenerateNarration,
+    onGenerateEpisodeNarration,
     onSaveTitle,
     canEditTitle,
   }: {
@@ -31,6 +34,8 @@ vi.mock("./timeline/TimelineCanvas", () => ({
     onUpdatePrompt?: (segmentId: string, field: string, value: unknown) => void;
     onGenerateStoryboard?: (segmentId: string) => void;
     onGenerateVideo?: (segmentId: string) => void;
+    onGenerateNarration?: (segmentId: string) => void;
+    onGenerateEpisodeNarration?: (scriptFile?: string) => void;
     onSaveTitle?: (title: string) => Promise<void>;
     canEditTitle?: boolean;
   }) => (
@@ -42,6 +47,8 @@ vi.mock("./timeline/TimelineCanvas", () => ({
       </button>
       <button onClick={() => onGenerateStoryboard?.("SEG-1")}>generate-storyboard</button>
       <button onClick={() => onGenerateVideo?.("SEG-1")}>generate-video</button>
+      <button onClick={() => onGenerateNarration?.("SEG-1")}>generate-narration</button>
+      <button onClick={() => onGenerateEpisodeNarration?.()}>generate-episode-narration</button>
       <button onClick={() => void onSaveTitle?.("新标题")?.catch(() => {})}>save-title</button>
     </div>
   ),
@@ -131,6 +138,33 @@ vi.mock("./lorebook/PropCard", () => ({
   ),
 }));
 
+vi.mock("./lorebook/ProductsPage", () => ({
+  ProductsPage: ({
+    products,
+    onUpdateProduct,
+    onGenerateProduct,
+    onAddProduct,
+  }: {
+    products: Record<string, { description: string }>;
+    onUpdateProduct: (name: string, updates: Record<string, unknown>) => void;
+    onGenerateProduct: (name: string) => void;
+    onAddProduct: (name: string, description: string, brand: string) => Promise<void>;
+  }) => (
+    <div data-testid="products-page" data-names={Object.keys(products).join(",")}>
+      <button onClick={() => onUpdateProduct("Phone", { description: "new product desc" })}>
+        update-product
+      </button>
+      <button onClick={() => onGenerateProduct("Phone")}>generate-product</button>
+      <button onClick={() => void onAddProduct("NewPhone", "desc", "Acme").catch(() => {})}>
+        add-product
+      </button>
+      <button onClick={() => void onAddProduct("NewPhone", "desc", "").catch(() => {})}>
+        add-product-no-brand
+      </button>
+    </div>
+  ),
+}));
+
 vi.mock("./lorebook/AddCharacterForm", () => ({
   AddCharacterForm: ({
     onSubmit,
@@ -202,6 +236,48 @@ function makeScript(): EpisodeScript {
   };
 }
 
+function makeAdScript(): EpisodeScript {
+  return {
+    episode: 1,
+    title: "广告视频",
+    content_mode: "ad",
+    duration_seconds: 30,
+    novel: { title: "n", chapter: "1" },
+    shots: [
+      {
+        shot_id: "SEG-1",
+        section: "hook",
+        duration_seconds: 5,
+        voiceover_text: "口播文案",
+        image_prompt: "ad image prompt",
+        video_prompt: "ad video prompt",
+        transition_to_next: "cut",
+      },
+    ],
+  };
+}
+
+function makeDramaScript(): EpisodeScript {
+  return {
+    episode: 1,
+    title: "EP1",
+    content_mode: "drama",
+    duration_seconds: 6,
+    novel: { title: "n", chapter: "1" },
+    scenes: [
+      {
+        scene_id: "SEG-1",
+        duration_seconds: 6,
+        segment_break: false,
+        characters_in_scene: ["Hero"],
+        image_prompt: "drama image prompt",
+        video_prompt: "drama video prompt",
+        transition_to_next: "cut",
+      },
+    ],
+  };
+}
+
 function renderAt(path: string) {
   const { hook } = memoryLocation({ path });
   return render(
@@ -215,6 +291,7 @@ describe("StudioCanvasRouter", () => {
   beforeEach(() => {
     useProjectsStore.setState(useProjectsStore.getInitialState(), true);
     useAppStore.setState(useAppStore.getInitialState(), true);
+    useConfigStatusStore.setState(useConfigStatusStore.getInitialState(), true);
     vi.restoreAllMocks();
   });
 
@@ -372,6 +449,93 @@ describe("StudioCanvasRouter", () => {
     });
   });
 
+  it("runs product callbacks and reports API failures with toast", async () => {
+    const projectData = makeProjectData({
+      products: { Phone: { description: "sleek phone" } },
+    });
+    useProjectsStore.setState({
+      currentProjectName: "demo",
+      currentProjectData: projectData,
+      currentScripts: { "episode_1.json": makeScript() },
+    });
+
+    vi.spyOn(API, "getProject").mockResolvedValue({
+      project: projectData,
+      scripts: { "episode_1.json": makeScript() },
+    });
+    const updateSpy = vi.spyOn(API, "updateProjectProduct").mockResolvedValue({ success: true });
+    const generateSpy = vi
+      .spyOn(API, "generateProjectProduct")
+      .mockResolvedValue({ success: true, task_id: "t-1", message: "已提交" });
+    const addSpy = vi.spyOn(API, "addProjectProduct").mockResolvedValue({ success: true });
+
+    renderAt("/products");
+    expect(screen.getByTestId("products-page")).toHaveAttribute("data-names", "Phone");
+
+    fireEvent.click(screen.getByText("update-product"));
+    await waitFor(() => {
+      expect(updateSpy).toHaveBeenCalledWith("demo", "Phone", {
+        description: "new product desc",
+      });
+      expect(API.getProject).toHaveBeenCalled();
+    });
+
+    fireEvent.click(screen.getByText("generate-product"));
+    await waitFor(() => {
+      expect(generateSpy).toHaveBeenCalledWith("demo", "Phone", "sleek phone");
+      expect(useAppStore.getState().toast?.text).toContain("标准参考图生成任务已提交");
+      expect(useAppStore.getState().toast?.tone).toBe("success");
+    });
+
+    fireEvent.click(screen.getByText("add-product"));
+    await waitFor(() => {
+      expect(addSpy).toHaveBeenCalledWith("demo", "NewPhone", "desc", "Acme");
+      expect(useAppStore.getState().toast?.text).toContain("已添加");
+    });
+
+    fireEvent.click(screen.getByText("add-product-no-brand"));
+    await waitFor(() => {
+      expect(addSpy).toHaveBeenCalledWith("demo", "NewPhone", "desc", undefined);
+    });
+  });
+
+  it("reports product callback failures with error toasts", async () => {
+    const projectData = makeProjectData({
+      products: { Phone: { description: "sleek phone" } },
+    });
+    useProjectsStore.setState({
+      currentProjectName: "demo",
+      currentProjectData: projectData,
+      currentScripts: { "episode_1.json": makeScript() },
+    });
+
+    vi.spyOn(API, "getProject").mockResolvedValue({
+      project: projectData,
+      scripts: { "episode_1.json": makeScript() },
+    });
+    vi.spyOn(API, "updateProjectProduct").mockRejectedValue(new Error("product update failed"));
+    vi.spyOn(API, "generateProjectProduct").mockRejectedValue(new Error("product generate failed"));
+    vi.spyOn(API, "addProjectProduct").mockRejectedValue(new Error("product add failed"));
+
+    renderAt("/products");
+
+    fireEvent.click(screen.getByText("update-product"));
+    await waitFor(() => {
+      expect(useAppStore.getState().toast?.text).toContain("更新产品失败");
+      expect(useAppStore.getState().toast?.tone).toBe("error");
+    });
+
+    fireEvent.click(screen.getByText("generate-product"));
+    await waitFor(() => {
+      expect(useAppStore.getState().toast?.text).toContain("提交失败");
+    });
+
+    fireEvent.click(screen.getByText("add-product"));
+    await waitFor(() => {
+      expect(useAppStore.getState().toast?.text).toContain("添加失败");
+    });
+  });
+
   it("runs timeline callbacks and handles generation failures", async () => {
     useProjectsStore.setState({
       currentProjectName: "demo",
@@ -418,6 +582,84 @@ describe("StudioCanvasRouter", () => {
         4,
       );
       expect(useAppStore.getState().toast?.text).toContain("生成视频失败");
+    });
+  });
+
+  it("resolves ad shots by shot_id when generating storyboard and video", async () => {
+    useProjectsStore.setState({
+      currentProjectName: "demo",
+      currentProjectData: makeProjectData({ content_mode: "ad" }),
+      currentScripts: { "episode_1.json": makeAdScript() },
+    });
+
+    vi.spyOn(API, "getProject").mockResolvedValue({
+      project: makeProjectData({ content_mode: "ad" }),
+      scripts: { "episode_1.json": makeAdScript() },
+    });
+    vi.spyOn(API, "generateStoryboard").mockResolvedValue({
+      success: true,
+      task_id: "t-sb",
+      message: "已提交",
+    });
+    vi.spyOn(API, "generateVideo").mockResolvedValue({
+      success: true,
+      task_id: "t-v",
+      message: "已提交",
+    });
+
+    renderAt("/episodes/1");
+
+    fireEvent.click(screen.getByText("generate-storyboard"));
+    await waitFor(() => {
+      expect(API.generateStoryboard).toHaveBeenCalledWith(
+        "demo",
+        "SEG-1",
+        "ad image prompt",
+        "episode_1.json",
+      );
+      expect(useAppStore.getState().toast?.tone).toBe("success");
+    });
+
+    fireEvent.click(screen.getByText("generate-video"));
+    await waitFor(() => {
+      // duration 取镜头自身 duration_seconds(5),不回退默认值 4
+      expect(API.generateVideo).toHaveBeenCalledWith(
+        "demo",
+        "SEG-1",
+        "ad video prompt",
+        "episode_1.json",
+        5,
+      );
+    });
+  });
+
+  it("resolves drama scenes by scene_id when generating storyboard", async () => {
+    useProjectsStore.setState({
+      currentProjectName: "demo",
+      currentProjectData: makeProjectData({ content_mode: "drama" }),
+      currentScripts: { "episode_1.json": makeDramaScript() },
+    });
+
+    vi.spyOn(API, "getProject").mockResolvedValue({
+      project: makeProjectData({ content_mode: "drama" }),
+      scripts: { "episode_1.json": makeDramaScript() },
+    });
+    vi.spyOn(API, "generateStoryboard").mockResolvedValue({
+      success: true,
+      task_id: "t-sb",
+      message: "已提交",
+    });
+
+    renderAt("/episodes/1");
+
+    fireEvent.click(screen.getByText("generate-storyboard"));
+    await waitFor(() => {
+      expect(API.generateStoryboard).toHaveBeenCalledWith(
+        "demo",
+        "SEG-1",
+        "drama image prompt",
+        "episode_1.json",
+      );
     });
   });
 
@@ -492,6 +734,135 @@ describe("StudioCanvasRouter", () => {
       expect(useAppStore.getState().toast?.text).toContain("更新分集标题失败");
       expect(useAppStore.getState().toast?.tone).toBe("error");
     });
+  });
+
+  it("submits narration generation and shows a success toast", async () => {
+    useProjectsStore.setState({
+      currentProjectName: "demo",
+      currentProjectData: makeProjectData(),
+      currentScripts: { "episode_1.json": makeScript() },
+    });
+
+    vi.spyOn(API, "getProject").mockResolvedValue({
+      project: makeProjectData(),
+      scripts: { "episode_1.json": makeScript() },
+    });
+    vi.spyOn(API, "generateNarrationAudio").mockResolvedValue({
+      success: true,
+      task_id: "t-1",
+      message: "已提交",
+    });
+
+    renderAt("/episodes/1");
+
+    fireEvent.click(screen.getByText("generate-narration"));
+    await waitFor(() => {
+      expect(API.generateNarrationAudio).toHaveBeenCalledWith("demo", "SEG-1", "episode_1.json");
+      expect(useAppStore.getState().toast?.text).toContain("旁白");
+      expect(useAppStore.getState().toast?.tone).toBe("success");
+    });
+  });
+
+  it("reports narration generation failure with an error toast", async () => {
+    useProjectsStore.setState({
+      currentProjectName: "demo",
+      currentProjectData: makeProjectData(),
+      currentScripts: { "episode_1.json": makeScript() },
+    });
+
+    vi.spyOn(API, "getProject").mockResolvedValue({
+      project: makeProjectData(),
+      scripts: { "episode_1.json": makeScript() },
+    });
+    vi.spyOn(API, "generateNarrationAudio").mockRejectedValue(new Error("tts failed"));
+
+    renderAt("/episodes/1");
+
+    fireEvent.click(screen.getByText("generate-narration"));
+    await waitFor(() => {
+      expect(useAppStore.getState().toast?.text).toContain("生成旁白失败");
+      expect(useAppStore.getState().toast?.tone).toBe("error");
+    });
+  });
+
+  it("submits episode narration batch and reports the submitted count", async () => {
+    useProjectsStore.setState({
+      currentProjectName: "demo",
+      currentProjectData: makeProjectData(),
+      currentScripts: { "episode_1.json": makeScript() },
+    });
+
+    vi.spyOn(API, "getProject").mockResolvedValue({
+      project: makeProjectData(),
+      scripts: { "episode_1.json": makeScript() },
+    });
+    vi.spyOn(API, "generateEpisodeNarrationAudio").mockResolvedValue({
+      success: true,
+      task_ids: ["t-1", "t-2"],
+      message: "已提交",
+    });
+
+    renderAt("/episodes/1");
+
+    fireEvent.click(screen.getByText("generate-episode-narration"));
+    await waitFor(() => {
+      expect(API.generateEpisodeNarrationAudio).toHaveBeenCalledWith("demo", "episode_1.json");
+      expect(useAppStore.getState().toast?.text).toContain("2");
+      expect(useAppStore.getState().toast?.tone).toBe("success");
+    });
+  });
+
+  it("tells the user when episode narration has nothing missing", async () => {
+    useProjectsStore.setState({
+      currentProjectName: "demo",
+      currentProjectData: makeProjectData(),
+      currentScripts: { "episode_1.json": makeScript() },
+    });
+
+    vi.spyOn(API, "getProject").mockResolvedValue({
+      project: makeProjectData(),
+      scripts: { "episode_1.json": makeScript() },
+    });
+    vi.spyOn(API, "generateEpisodeNarrationAudio").mockResolvedValue({
+      success: true,
+      task_ids: [],
+      message: "无需补缺",
+    });
+
+    renderAt("/episodes/1");
+
+    fireEvent.click(screen.getByText("generate-episode-narration"));
+    await waitFor(() => {
+      expect(useAppStore.getState().toast?.text).toContain("所有分镜均已生成旁白");
+      expect(useAppStore.getState().toast?.tone).toBe("success");
+    });
+  });
+
+  it("blocks narration generation when no audio provider is configured", async () => {
+    useProjectsStore.setState({
+      currentProjectName: "demo",
+      currentProjectData: makeProjectData(),
+      currentScripts: { "episode_1.json": makeScript() },
+    });
+    useConfigStatusStore.setState({
+      initialized: true,
+      availableMediaTypes: ["image", "video", "text"],
+    });
+
+    vi.spyOn(API, "getProject").mockResolvedValue({
+      project: makeProjectData(),
+      scripts: { "episode_1.json": makeScript() },
+    });
+    const generateSpy = vi.spyOn(API, "generateNarrationAudio");
+
+    renderAt("/episodes/1");
+
+    fireEvent.click(screen.getByText("generate-narration"));
+    await waitFor(() => {
+      expect(useAppStore.getState().toast?.text).toContain("音频供应商");
+      expect(useAppStore.getState().toast?.tone).toBe("error");
+    });
+    expect(generateSpy).not.toHaveBeenCalled();
   });
 
   it("reports grid generation failure with an error toast", async () => {

@@ -23,6 +23,7 @@ from pydantic import BaseModel, Field
 
 from lib.agent_profile import agent_profile_dir
 from lib.asset_types import ASSET_SPECS, validate_asset_name
+from lib.episode_ledger import SOURCE_TEXT_SUFFIXES
 from lib.json_io import atomic_write_json, load_json, load_json_or_none
 from lib.profile_manifest import (
     VALID_CONTENT_MODES,
@@ -122,6 +123,7 @@ class ProjectManager:
         "characters",
         "scenes",
         "props",
+        "products",
         "storyboards",
         "videos",
         "thumbnails",
@@ -411,6 +413,7 @@ class ProjectManager:
             "characters": [],
             "scenes": [],
             "props": [],
+            "products": [],
             "storyboards": [],
             "videos": [],
             "outputs": [],
@@ -432,6 +435,8 @@ class ProjectManager:
                     status["scenes"] = [f.name for f in files if f.suffix in [".png", ".jpg", ".jpeg"]]
                 elif subdir == "props":
                     status["props"] = [f.name for f in files if f.suffix in [".png", ".jpg", ".jpeg"]]
+                elif subdir == "products":
+                    status["products"] = [f.name for f in files if f.suffix in [".png", ".jpg", ".jpeg"]]
                 elif subdir == "storyboards":
                     status["storyboards"] = [f.name for f in files if f.suffix in [".png", ".jpg", ".jpeg"]]
                 elif subdir == "videos":
@@ -589,7 +594,9 @@ class ProjectManager:
             # 返回 None 让 sum() 抛 TypeError——显式判 None 视为缺失，与同函数前面对 metadata
             # 缺字段时按 setdefault 兜底的语义一致：脏值不阻塞 metadata 重算，但若 default 也
             # 失真（如 reference 模式未填 duration_seconds），下游 estimated 字段仍是近似值。
-            default_duration = 4 if kind == "segments" else 8
+            # shots（ad）无单镜头默认时长偏好，缺失按 0 计（与 StatusCalculator 口径一致）；
+            # 未知 kind 沿用历史兜底 8。
+            default_duration = {"segments": 4, "scenes": 8, "shots": 0}.get(kind, 8)
 
             def _duration(item: dict) -> int:
                 value = item.get("duration_seconds")
@@ -1486,6 +1493,11 @@ class ProjectManager:
         if not legacy:
             project.pop("video_model_settings", None)
 
+    # 广告/短片项目恒单集：episodes 恒为第 1 集单条，剧本即第 1 集脚本文件
+    AD_SINGLE_EPISODE = {"episode": 1, "title": "", "script_file": "scripts/episode_1.json"}
+    # 创建入口未传 target_duration 时的数据层兜底（与创建向导默认档位同值）
+    AD_DEFAULT_TARGET_DURATION = 60
+
     def create_project_metadata(
         self,
         project_name: str,
@@ -1496,6 +1508,8 @@ class ProjectManager:
         default_duration: int | None = None,
         style_template_id: str | None = None,
         extras: dict | None = None,
+        target_duration: int | None = None,
+        brief: str | None = None,
     ) -> dict:
         """
         创建新的项目元数据文件
@@ -1504,9 +1518,29 @@ class ProjectManager:
         image_provider_i2i / text_backend_{script,overview,style}）。调用方负责剔除空值，
         本方法只按字面写入 extras 中已有的键——退役的单字段 image_backend 不在写入范围
         （解析链不再读取、写边界已拒绝），调用方不应再传入。
+
+        `target_duration` / `brief` 仅 content_mode=ad 可用；ad 项目不持有
+        `default_duration`，且 episodes 恒为第 1 集单条。
         """
         project_name = self.normalize_project_name(project_name)
         project_title = str(title).strip() if title is not None else ""
+        resolved_mode = content_mode or "narration"
+
+        # 数据层守卫：模式专属字段互斥。路由层已返回 400，这里再兜一道防非路由调用方。
+        if resolved_mode == "ad":
+            if default_duration is not None:
+                raise ValueError("广告/短片项目不持有 default_duration（镜头时长按 target_duration 预算逐镜头规划）")
+            if target_duration is not None and (
+                not isinstance(target_duration, int) or isinstance(target_duration, bool) or target_duration <= 0
+            ):
+                raise ValueError(f"target_duration 必须为正整数秒，当前为 {target_duration!r}")
+            if brief is not None and not isinstance(brief, str):
+                raise ValueError(f"brief 必须是字符串，当前为 {brief!r}")
+        else:
+            if target_duration is not None:
+                raise ValueError("target_duration 仅广告/短片项目（content_mode=ad）可用")
+            if brief is not None:
+                raise ValueError("brief 仅广告/短片项目（content_mode=ad）可用")
 
         # schema_version 与 CURRENT_SCHEMA_VERSION 对齐：新项目即最新形态，
         # 避免被启动迁移误处理（如 v0→v1 在"未含 clues 字段"时误清空 scenes/props）。
@@ -1517,10 +1551,11 @@ class ProjectManager:
             # 允许空字符串:前端会以 i18n「未命名项目」兜底显示,避免把 slug
             # 风格的 project_name 固化为用户可见的标题。
             "title": project_title,
-            "content_mode": content_mode or "narration",
+            "content_mode": resolved_mode,
             "aspect_ratio": aspect_ratio or "9:16",
             "style": style or "",
             "episodes": [],
+            "planning_cursor": None,
             "characters": {},
             "scenes": {},
             "props": {},
@@ -1529,6 +1564,12 @@ class ProjectManager:
                 "updated_at": datetime.now(UTC).isoformat(),
             },
         }
+        if resolved_mode == "ad":
+            project["target_duration"] = (
+                target_duration if target_duration is not None else self.AD_DEFAULT_TARGET_DURATION
+            )
+            project["brief"] = brief if brief is not None else ""
+            project["episodes"] = [dict(self.AD_SINGLE_EPISODE)]
         if default_duration is not None:
             project["default_duration"] = default_duration
         if style_template_id is not None:
@@ -1538,6 +1579,12 @@ class ProjectManager:
             # 重新制造被静默忽略的 legacy 形态）。路由层已返回 400，这里再兜一道防非路由调用方。
             if "image_backend" in extras:
                 raise ValueError("image_backend 已废弃，请改用 image_provider_t2i / image_provider_i2i")
+            # extras 只许追加可选字段，不得覆盖上方已校验/已构造的核心字段——
+            # 否则非路由调用方可借 extras 绕过模式互斥守卫（如 ad 项目写回 default_duration）。
+            reserved = set(project) | {"default_duration", "style_template_id", "target_duration", "brief"}
+            forbidden = reserved & set(extras)
+            if forbidden:
+                raise ValueError(f"extras 不允许覆盖核心字段: {sorted(forbidden)}")
             project.update(extras)
 
         self.save_project(project_name, project)
@@ -1952,20 +1999,67 @@ class ProjectManager:
         """获取待生成设计图的角色列表（无 character_sheet 或文件不存在）"""
         return self._get_pending_assets("character", project_name)
 
+    # ==================== 产品管理（product） ====================
+
+    def update_product_sheet(self, project_name: str, name: str, sheet_path: str) -> dict:
+        """更新产品标准参考图（product sheet）路径"""
+        return self._update_asset_sheet("product", project_name, name, sheet_path)
+
+    def get_product(self, project_name: str, name: str) -> dict:
+        """获取产品定义"""
+        return self._get_asset("product", project_name, name)
+
+    def get_pending_project_products(self, project_name: str) -> list[dict]:
+        """无 product_sheet 或文件不存在的产品。"""
+        return self._get_pending_assets("product", project_name)
+
+    def get_product_path(self, project_name: str, filename: str) -> Path:
+        """获取产品图片路径"""
+        return self._get_asset_path("product", project_name, filename)
+
+    def add_product_reference_image(self, project_name: str, product_name: str, ref_path: str) -> dict:
+        """向产品的 reference_images 列表追加一张原图路径（已存在则不重复追加）。
+
+        原图是产品保真的验收锚点，只增不改；删除/重排走资产 PATCH 通道。
+        """
+
+        def _mutate(project: dict) -> None:
+            bucket = project.get("products")
+            if bucket is None or product_name not in bucket:
+                raise KeyError(f"产品 '{product_name}' 不存在")
+            refs = bucket[product_name].setdefault("reference_images", [])
+            if not isinstance(refs, list):
+                raise ValueError(
+                    f"products['{product_name}'].reference_images 必须是列表，当前为 {type(refs).__name__}"
+                )
+            if ref_path not in refs:
+                refs.append(ref_path)
+
+        return self.update_project(project_name, _mutate)
+
     # ==================== 角色/场景/道具直接写入工具 ====================
 
     @staticmethod
     def _build_asset_entry(asset_type: str, description: str, source: dict | None = None) -> dict:
-        """按 ASSET_SPECS 构造 entry：description + sheet 字段为空 + extra 字段从 source 取或默认 ''。
+        """按 ASSET_SPECS 构造 entry：description + sheet 字段为空 + extra 字段从 source 取或默认。
 
         source 为 None 时（add_character 等单条新增），仅写入 spec 中声明的 extra 字段
-        默认空串；source 提供时（batch 新增），同时允许覆盖 sheet 字段。
+        默认值（字符串字段空串、列表字段空列表）；source 提供时（batch 新增），同时允许
+        覆盖 sheet 字段。source 中的非法类型不在此处修正，由落盘前的结构校验 fail-loud。
         """
         spec = ASSET_SPECS[asset_type]
         data = source or {}
         entry: dict = {"description": description, spec.sheet_field: data.get(spec.sheet_field, "")}
         for field in spec.extra_string_fields:
             entry[field] = data.get(field, "")
+        for field in spec.extra_list_fields:
+            value = data.get(field)
+            if isinstance(value, list):
+                entry[field] = list(value)  # 复制，避免 entry 与调用方共享同一列表对象
+            elif value is None:
+                entry[field] = []
+            else:
+                entry[field] = value  # 非法类型透传，由落盘前结构校验 fail-loud
         return entry
 
     def add_character(self, project_name: str, name: str, description: str, voice_style: str = "") -> bool:
@@ -1982,6 +2076,11 @@ class ProjectManager:
         """直接添加道具到 project.json。已存在返回 False。"""
         entry = self._build_asset_entry("prop", description)
         return self._add_asset("prop", project_name, name, entry)
+
+    def add_product(self, project_name: str, name: str, description: str, brand: str = "") -> bool:
+        """直接添加产品到 project.json。已存在返回 False。"""
+        entry = self._build_asset_entry("product", description, {"brand": brand})
+        return self._add_asset("product", project_name, name, entry)
 
     def add_characters_batch(self, project_name: str, characters: dict[str, dict]) -> int:
         """批量添加角色到 project.json。已存在的跳过，返回新增数量。"""
@@ -2063,7 +2162,7 @@ class ProjectManager:
         contents = []
         total_chars = 0
         for file_path in sorted(source_dir.glob("*")):
-            if not (file_path.is_file() and file_path.suffix.lower() in [".txt", ".md"]):
+            if not (file_path.is_file() and file_path.suffix.lower() in SOURCE_TEXT_SUFFIXES):
                 continue
 
             raw = file_path.read_bytes()

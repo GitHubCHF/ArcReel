@@ -15,6 +15,7 @@ from pydantic import BaseModel
 
 from lib.app_data_dir import app_data_dir
 from lib.asset_types import ASSET_SPECS
+from lib.config.resolver import ConfigResolver
 from lib.generation_queue import get_generation_queue
 from lib.generation_queue_client import TaskSpec, TaskSpecValidationError
 from lib.i18n import Translator
@@ -51,6 +52,10 @@ class GenerateVideoRequest(BaseModel):
     seed: int | None = None
 
 
+class GenerateTtsRequest(BaseModel):
+    script_file: str
+
+
 class GenerateCharacterRequest(BaseModel):
     prompt: str
 
@@ -60,6 +65,10 @@ class GenerateSceneRequest(BaseModel):
 
 
 class GeneratePropRequest(BaseModel):
+    prompt: str
+
+
+class GenerateProductRequest(BaseModel):
     prompt: str
 
 
@@ -233,7 +242,181 @@ async def generate_video(
         raise HTTPException(status_code=500, detail=str(e))
 
 
-# ==================== 资产设计图生成（character / scene / prop 共用） ====================
+# ==================== 旁白配音（TTS）生成 ====================
+
+
+async def _require_audio_provider_configured(project: dict, _t: Translator) -> str:
+    """未配置任何 audio 供应商时直接 400，让用户在生成入口就看到清晰提示。
+
+    解析失败（无全局默认且 auto-resolve 找不到 ready 的 audio 供应商）即视为未配置；
+    解析成功但凭证失效等运行期错误与图片/视频一致，留给 worker 在任务面板暴露。
+    返回解析出的 provider_id，入队时直接复用，避免每段重复解析。
+    """
+    from lib.db import async_session_factory
+
+    try:
+        resolved = await ConfigResolver(async_session_factory).resolve_audio_backend(project, None)
+    except ValueError:
+        raise HTTPException(status_code=400, detail=_t("audio_provider_not_configured"))
+    return resolved.provider_id
+
+
+def _narration_text(segment: dict) -> str:
+    text = segment.get("novel_text")
+    return text.strip() if isinstance(text, str) else ""
+
+
+async def _enqueue_tts_segment(
+    *,
+    project_name: str,
+    segment_id: str,
+    script_file: str,
+    user_id: str,
+    provider_id: str | None,
+    _t: Translator,
+) -> dict:
+    try:
+        spec = TaskSpec.from_request(
+            task_type="tts",
+            media_type="audio",
+            resource_id=segment_id,
+            script_file=script_file,
+        )
+    except TaskSpecValidationError as e:
+        raise HTTPException(status_code=400, detail=_t(e.code, **e.params))
+
+    queue = get_generation_queue()
+    return await queue.enqueue_task(
+        project_name=project_name,
+        task_type=spec.task_type,
+        media_type=spec.media_type,
+        resource_id=spec.resource_id,
+        script_file=spec.script_file,
+        payload=spec.payload,
+        source="webui",
+        user_id=user_id,
+        provider_id=provider_id,
+    )
+
+
+@router.post("/projects/{project_name}/generate/tts/{segment_id}")
+async def generate_tts(
+    project_name: str,
+    segment_id: str,
+    req: GenerateTtsRequest,
+    _user: CurrentUser,
+    _t: Translator,
+):
+    """提交单段旁白配音任务到队列，立即返回 task_id。
+
+    文本由执行层从剧本 segment 的 novel_text 读取；已有旁白的段允许重生成。
+    """
+    try:
+
+        def _sync() -> tuple[dict, dict]:
+            pm_local = get_project_manager()
+            _project = pm_local.load_project(project_name)
+            script = pm_local.load_script(project_name, req.script_file)
+            items, id_field, _, _, _ = get_storyboard_items(script)
+            resolved = find_storyboard_item(items, id_field, segment_id)
+            if resolved is None:
+                raise HTTPException(status_code=404, detail=_t("segment_not_found", id=segment_id))
+            return _project, resolved[0]
+
+        project, segment = await asyncio.to_thread(_sync)
+
+        if not _narration_text(segment):
+            raise HTTPException(status_code=400, detail=_t("tts_novel_text_missing", segment_id=segment_id))
+
+        provider_id = await _require_audio_provider_configured(project, _t)
+
+        result = await _enqueue_tts_segment(
+            project_name=project_name,
+            segment_id=segment_id,
+            script_file=req.script_file,
+            user_id=_user.id,
+            provider_id=provider_id,
+            _t=_t,
+        )
+
+        return {
+            "success": True,
+            "task_id": result["task_id"],
+            "message": _t("tts_task_submitted", segment_id=segment_id),
+        }
+
+    except FileNotFoundError as e:
+        raise HTTPException(status_code=404, detail=str(e))
+    except HTTPException:
+        raise
+    except ScriptEditError as e:
+        raise HTTPException(status_code=400, detail=_t("script_data_corrupted", reason=str(e)))
+    except Exception:
+        logger.exception("请求处理失败")
+        raise HTTPException(status_code=500, detail=_t("internal_server_error"))
+
+
+@router.post("/projects/{project_name}/generate/tts")
+async def generate_tts_batch(
+    project_name: str,
+    req: GenerateTtsRequest,
+    _user: CurrentUser,
+    _t: Translator,
+):
+    """批量提交旁白配音任务：只入队缺少 narration_audio 且有小说原文的段（断点补缺）。"""
+    try:
+
+        def _sync() -> tuple[dict, list[str]]:
+            pm_local = get_project_manager()
+            _project = pm_local.load_project(project_name)
+            script = pm_local.load_script(project_name, req.script_file)
+            items, id_field, _, _, _ = get_storyboard_items(script)
+            missing: list[str] = []
+            for item in items:
+                if not _narration_text(item):
+                    continue
+                assets = item.get("generated_assets") or {}
+                if isinstance(assets, dict) and assets.get("narration_audio"):
+                    continue
+                seg_id = item.get(id_field)
+                if seg_id:
+                    missing.append(str(seg_id))
+            return _project, missing
+
+        project, missing_ids = await asyncio.to_thread(_sync)
+
+        if not missing_ids:
+            return {"success": True, "task_ids": [], "message": _t("tts_batch_none_missing")}
+
+        provider_id = await _require_audio_provider_configured(project, _t)
+
+        task_ids: list[str] = []
+        for seg_id in missing_ids:
+            result = await _enqueue_tts_segment(
+                project_name=project_name,
+                segment_id=seg_id,
+                script_file=req.script_file,
+                user_id=_user.id,
+                provider_id=provider_id,
+                _t=_t,
+            )
+            task_ids.append(result["task_id"])
+
+        message = _t("tts_batch_submitted", count=len(task_ids)) if task_ids else _t("tts_batch_none_missing")
+        return {"success": True, "task_ids": task_ids, "message": message}
+
+    except FileNotFoundError as e:
+        raise HTTPException(status_code=404, detail=str(e))
+    except HTTPException:
+        raise
+    except ScriptEditError as e:
+        raise HTTPException(status_code=400, detail=_t("script_data_corrupted", reason=str(e)))
+    except Exception:
+        logger.exception("请求处理失败")
+        raise HTTPException(status_code=500, detail=_t("internal_server_error"))
+
+
+# ==================== 资产设计图生成（character / scene / prop / product 共用） ====================
 
 
 # i18n key 命名差异：scene 用历史前缀 "project_scene_*"
@@ -241,6 +424,7 @@ _ASSET_GENERATE_I18N: dict[str, dict[str, str]] = {
     "character": {"not_found": "character_not_found", "submitted": "character_task_submitted"},
     "scene": {"not_found": "project_scene_not_found", "submitted": "scene_task_submitted"},
     "prop": {"not_found": "prop_not_found", "submitted": "prop_task_submitted"},
+    "product": {"not_found": "product_not_found", "submitted": "product_task_submitted"},
 }
 
 
@@ -253,7 +437,7 @@ async def _enqueue_asset_generation(
     user_id: str,
     _t: Translator,
 ) -> dict:
-    """三类资产（character / scene / prop）设计图生成共用入队逻辑。"""
+    """项目级资产（character / scene / prop / product）设计图生成共用入队逻辑。"""
     spec = ASSET_SPECS[asset_type]
     keys = _ASSET_GENERATE_I18N[asset_type]
 
@@ -360,6 +544,33 @@ async def generate_prop(
             asset_type="prop",
             project_name=project_name,
             resource_name=prop_name,
+            prompt=req.prompt,
+            user_id=_user.id,
+            _t=_t,
+        )
+    except FileNotFoundError as e:
+        raise HTTPException(status_code=404, detail=str(e))
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.exception("请求处理失败")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.post("/projects/{project_name}/generate/product/{product_name}")
+async def generate_product(
+    project_name: str,
+    product_name: str,
+    req: GenerateProductRequest,
+    _user: CurrentUser,
+    _t: Translator,
+):
+    """提交产品标准参考图（product sheet）生成任务到队列，立即返回 task_id。"""
+    try:
+        return await _enqueue_asset_generation(
+            asset_type="product",
+            project_name=project_name,
+            resource_name=product_name,
             prompt=req.prompt,
             user_id=_user.id,
             _t=_t,

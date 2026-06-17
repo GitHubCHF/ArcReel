@@ -4,6 +4,7 @@ import { Route, Switch, Redirect } from "wouter";
 import { useTranslation } from "react-i18next";
 import { useProjectsStore } from "@/stores/projects-store";
 import { useAppStore } from "@/stores/app-store";
+import { useConfigStatusStore } from "@/stores/config-status-store";
 import { useTasksStore } from "@/stores/tasks-store";
 import { TimelineCanvas } from "./timeline/TimelineCanvas";
 import { OverviewCanvas } from "./OverviewCanvas";
@@ -12,13 +13,14 @@ import { SourceFilesPage } from "./SourceFilesPage";
 import { CharactersPage } from "./lorebook/CharactersPage";
 import { ScenesPage } from "./lorebook/ScenesPage";
 import { PropsPage } from "./lorebook/PropsPage";
+import { ProductsPage } from "./lorebook/ProductsPage";
 import { ReferenceVideoCanvas } from "./reference/ReferenceVideoCanvas";
 import { GridImageToVideoCanvas } from "./grid/GridImageToVideoCanvas";
 import { API } from "@/api";
 import { buildEntityRevisionKey } from "@/utils/project-changes";
 import { getProviderModels, getCustomProviderModels, lookupSupportedDurations } from "@/utils/provider-models";
 import { effectiveMode } from "@/utils/generation-mode";
-import type { Scene, Prop, CustomProviderInfo, ProviderInfo } from "@/types";
+import type { Scene, Prop, Product, CustomProviderInfo, ProviderInfo } from "@/types";
 import type { EpisodeScript } from "@/types/script";
 
 // ---------------------------------------------------------------------------
@@ -40,7 +42,9 @@ function resolveSegmentPrompt(
   const seg =
     script.content_mode === "narration"
       ? script.segments.find((s) => s.segment_id === segmentId)
-      : script.scenes.find((s) => s.scene_id === segmentId);
+      : script.content_mode === "ad"
+        ? script.shots.find((s) => s.shot_id === segmentId)
+        : script.scenes.find((s) => s.scene_id === segmentId);
   return {
     resolvedFile,
     prompt: seg?.[field] ?? "",
@@ -161,6 +165,19 @@ export function StudioCanvasRouter() {
     }
     return names;
   }, [tasks, currentProjectName]);
+  const generatingProductNames = useMemo(() => {
+    const names = new Set<string>();
+    for (const t of tasks) {
+      if (
+        t.task_type === "product" &&
+        t.project_name === currentProjectName &&
+        (t.status === "queued" || t.status === "running")
+      ) {
+        names.add(t.resource_id);
+      }
+    }
+    return names;
+  }, [tasks, currentProjectName]);
 
   // 刷新项目数据
   const refreshProject = useCallback(async (invalidateKeys: string[] = []) => {
@@ -253,6 +270,46 @@ export function StudioCanvasRouter() {
       useAppStore.getState().pushToast(tRef.current("generate_video_failed", { message: errMsg(err) }), "error");
     }
   }, [currentProjectName, currentScripts]);
+
+  // 未配置 audio 供应商时在前端就给出清晰提示（后端入队前还有同语义的 400 兜底）
+  const ensureAudioProviderConfigured = useCallback((): boolean => {
+    const cfg = useConfigStatusStore.getState();
+    if (cfg.initialized && !cfg.hasMediaType("audio")) {
+      useAppStore.getState().pushToast(tRef.current("audio_provider_not_configured_toast"), "error");
+      return false;
+    }
+    return true;
+  }, []);
+
+  const handleGenerateNarration = useCallback(async (segmentId: string, scriptFile?: string) => {
+    if (!currentProjectName || !currentScripts) return;
+    if (!ensureAudioProviderConfigured()) return;
+    const resolvedFile = scriptFile ?? Object.keys(currentScripts)[0];
+    if (!resolvedFile) return;
+    try {
+      await API.generateNarrationAudio(currentProjectName, segmentId, resolvedFile);
+      useAppStore.getState().pushToast(tRef.current("narration_task_submitted_toast", { id: segmentId }), "success");
+    } catch (err) {
+      useAppStore.getState().pushToast(tRef.current("generate_narration_failed", { message: errMsg(err) }), "error");
+    }
+  }, [currentProjectName, currentScripts, ensureAudioProviderConfigured]);
+
+  const handleGenerateEpisodeNarration = useCallback(async (scriptFile?: string) => {
+    if (!currentProjectName || !currentScripts) return;
+    if (!ensureAudioProviderConfigured()) return;
+    const resolvedFile = scriptFile ?? Object.keys(currentScripts)[0];
+    if (!resolvedFile) return;
+    try {
+      const res = await API.generateEpisodeNarrationAudio(currentProjectName, resolvedFile);
+      const message =
+        res.task_ids.length > 0
+          ? tRef.current("narration_batch_submitted_toast", { count: res.task_ids.length })
+          : tRef.current("narration_batch_none_missing_toast");
+      useAppStore.getState().pushToast(message, "success");
+    } catch (err) {
+      useAppStore.getState().pushToast(tRef.current("generate_narration_failed", { message: errMsg(err) }), "error");
+    }
+  }, [currentProjectName, currentScripts, ensureAudioProviderConfigured]);
 
   // ---- Character CRUD callbacks ----
   const handleSaveCharacter = useCallback(async (
@@ -398,6 +455,43 @@ export function StudioCanvasRouter() {
     }
   }, [currentProjectName, refreshProject]);
 
+  // ---- Product CRUD callbacks ----
+  const handleUpdateProduct = useCallback(async (name: string, updates: Partial<Product>) => {
+    if (!currentProjectName) return;
+    try {
+      await API.updateProjectProduct(currentProjectName, name, updates);
+      await refreshProject();
+    } catch (err) {
+      useAppStore.getState().pushToast(tRef.current("update_product_failed", { message: errMsg(err) }), "error");
+    }
+  }, [currentProjectName, refreshProject]);
+
+  const handleGenerateProduct = useCallback(async (name: string) => {
+    if (!currentProjectName) return;
+    try {
+      await API.generateProjectProduct(
+        currentProjectName,
+        name,
+        currentProjectData?.products?.[name]?.description ?? "",
+      );
+      useAppStore.getState().pushToast(tRef.current("product_task_submitted_toast", { name }), "success");
+    } catch (err) {
+      useAppStore.getState().pushToast(tRef.current("submit_failed", { message: errMsg(err) }), "error");
+    }
+  }, [currentProjectName, currentProjectData]);
+
+  const handleAddProductSubmit = useCallback(async (name: string, description: string, brand: string) => {
+    if (!currentProjectName) return;
+    try {
+      await API.addProjectProduct(currentProjectName, name, description, brand || undefined);
+      await refreshProject();
+      useAppStore.getState().pushToast(tRef.current("product_added_toast", { name }), "success");
+    } catch (err) {
+      useAppStore.getState().pushToast(tRef.current("add_failed", { message: errMsg(err) }), "error");
+      throw err; // ProductFormModal onSubmit 消费：失败时阻止关闭对话框
+    }
+  }, [currentProjectName, refreshProject]);
+
   const handleGenerateGrid = useCallback(async (episode: number, scriptFile: string, sceneIds?: string[]) => {
     if (!currentProjectName) return;
     try {
@@ -427,6 +521,12 @@ export function StudioCanvasRouter() {
   const handleGeneratePropVoid = useCallback((...args: Parameters<typeof handleGenerateProp>) => {
     void handleGenerateProp(...args).catch(console.error);
   }, [handleGenerateProp]);
+  const handleUpdateProductVoid = useCallback((...args: Parameters<typeof handleUpdateProduct>) => {
+    void handleUpdateProduct(...args).catch(console.error);
+  }, [handleUpdateProduct]);
+  const handleGenerateProductVoid = useCallback((...args: Parameters<typeof handleGenerateProduct>) => {
+    void handleGenerateProduct(...args).catch(console.error);
+  }, [handleGenerateProduct]);
 
   if (!currentProjectName) {
     return (
@@ -493,6 +593,19 @@ export function StudioCanvasRouter() {
           onRestorePropVersion={handleRestoreAsset}
           onRefreshProject={refreshProject}
           generatingPropNames={generatingPropNames}
+        />
+      </Route>
+
+      <Route path="/products">
+        <ProductsPage
+          projectName={currentProjectName}
+          products={currentProjectData?.products ?? {}}
+          onUpdateProduct={handleUpdateProductVoid}
+          onGenerateProduct={handleGenerateProductVoid}
+          onAddProduct={handleAddProductSubmit}
+          onRestoreProductVersion={handleRestoreAsset}
+          onRefreshProject={refreshProject}
+          generatingProductNames={generatingProductNames}
         />
       </Route>
 
@@ -570,6 +683,8 @@ export function StudioCanvasRouter() {
                     onUpdatePrompt={handleUpdatePrompt}
                     onGenerateStoryboard={voidPromise(handleGenerateStoryboard)}
                     onGenerateVideo={voidPromise(handleGenerateVideo)}
+                    onGenerateNarration={voidPromise(handleGenerateNarration)}
+                    onGenerateEpisodeNarration={voidPromise(handleGenerateEpisodeNarration)}
                     onRestoreStoryboard={handleRestoreAsset}
                     onRestoreVideo={handleRestoreAsset}
                   />

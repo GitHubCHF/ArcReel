@@ -47,6 +47,7 @@ class _FakePM:
             "characters": {"张三": {"description": "主角"}, "李四": {"description": ""}},
             "scenes": {"村口": {"description": "黄昏的村口"}},
             "props": {},
+            "products": {"保温杯": {"description": "不锈钢保温杯", "reference_images": [], "selling_points": []}},
             "style": "anime",
             "style_description": "soft pastel",
         }
@@ -88,6 +89,9 @@ class _FakePM:
     def get_pending_project_props(self, _name: str) -> list[dict[str, Any]]:
         return []
 
+    def get_pending_project_products(self, _name: str) -> list[dict[str, Any]]:
+        return [{"name": "保温杯", "description": "不锈钢保温杯"}]
+
 
 @pytest.fixture
 def fake_ctx(tmp_path: Path) -> ToolContext:
@@ -119,6 +123,13 @@ def test_build_arcreel_mcp_server_contains_all_tools(tmp_path: Path) -> None:
     # SDK exposes the registered tools on srv["instance"]; we just sanity-check
     # the type returned matches the spec contract.
     assert "instance" in srv
+
+
+def test_generate_narration_audio_registered() -> None:
+    """旁白配音工具必须同时进 MCP 工具 id 集（前端 chip 三语校验依赖它）。"""
+    from server.agent_runtime.sdk_tools import ARCREEL_MCP_TOOL_IDS
+
+    assert "generate_narration_audio" in ARCREEL_MCP_TOOL_IDS
 
 
 # ---------------------------------------------------------------------------
@@ -171,6 +182,7 @@ async def test_list_pending_assets_happy(fake_ctx: ToolContext) -> None:
     text = out["content"][0]["text"]
     assert "张三" in text
     assert "村口" in text
+    assert "保温杯" in text
 
 
 async def test_list_pending_assets_error(fake_ctx: ToolContext, monkeypatch) -> None:
@@ -213,6 +225,274 @@ async def test_generate_assets_names_without_type(fake_ctx: ToolContext) -> None
     tool_obj = generate_assets_tool(fake_ctx)
     out = await _call(tool_obj, {"names": ["张三"]})
     assert out.get("is_error") is True
+
+
+# ---------------------------------------------------------------------------
+# enqueue_narration_audio
+# ---------------------------------------------------------------------------
+
+
+def _narration_audio_script() -> dict[str, Any]:
+    return {
+        "content_mode": "narration",
+        "episode": 1,
+        "segments": [
+            {
+                "segment_id": "E1S01",
+                "novel_text": "却说天下大势，分久必合。",
+                "generated_assets": {},
+            },
+            {
+                "segment_id": "E1S02",
+                "novel_text": "话说周末七国分争。",
+                "generated_assets": {"narration_audio": "audio/segment_E1S02.wav"},
+            },
+        ],
+    }
+
+
+async def test_generate_narration_audio_enqueues_missing_segments(fake_ctx: ToolContext, monkeypatch) -> None:
+    """不传 segment_ids → 只为缺 narration_audio 的段入队 tts 任务，prompt 为该段 novel_text。"""
+    from server.agent_runtime.sdk_tools import enqueue_narration_audio as mod
+
+    fake_ctx.pm.script_payload = _narration_audio_script()  # type: ignore[attr-defined]
+    captured: list[Any] = []
+
+    async def fake_batch(*, project_name, specs, on_success=None, on_failure=None):
+        from lib.generation_queue_client import BatchTaskResult
+
+        captured.extend(specs)
+        succ = [
+            BatchTaskResult(
+                resource_id=s.resource_id,
+                task_id="t1",
+                status="succeeded",
+                result={"file_path": f"audio/segment_{s.resource_id}.wav"},
+            )
+            for s in specs
+        ]
+        return succ, []
+
+    monkeypatch.setattr(mod, "batch_enqueue_and_wait", fake_batch)
+    tool_obj = mod.generate_narration_audio_tool(fake_ctx)
+    out = await _call(tool_obj, {"script": "episode_1.json"})
+
+    assert out.get("is_error") is not True, out
+    assert [s.resource_id for s in captured] == ["E1S01"]
+    spec = captured[0]
+    assert spec.task_type == "tts"
+    assert spec.media_type == "audio"
+    assert spec.payload["prompt"] == "却说天下大势，分久必合。"
+    assert spec.payload["script_file"] == "episode_1.json"
+    text = out["content"][0]["text"]
+    assert "1 succeeded" in text
+    assert "audio/segment_E1S01.wav" in text
+
+
+async def test_generate_narration_audio_explicit_ids_regenerate(fake_ctx: ToolContext, monkeypatch) -> None:
+    """传 segment_ids → 即使该段已有 narration_audio 也重新入队（批量范围/单段重生语义）。"""
+    from server.agent_runtime.sdk_tools import enqueue_narration_audio as mod
+
+    fake_ctx.pm.script_payload = _narration_audio_script()  # type: ignore[attr-defined]
+    captured: list[Any] = []
+
+    async def fake_batch(*, project_name, specs, on_success=None, on_failure=None):
+        from lib.generation_queue_client import BatchTaskResult
+
+        captured.extend(specs)
+        return [
+            BatchTaskResult(resource_id=s.resource_id, task_id="t1", status="succeeded", result={}) for s in specs
+        ], []
+
+    monkeypatch.setattr(mod, "batch_enqueue_and_wait", fake_batch)
+    tool_obj = mod.generate_narration_audio_tool(fake_ctx)
+    out = await _call(tool_obj, {"script": "episode_1.json", "segment_ids": ["E1S02"]})
+
+    assert out.get("is_error") is not True, out
+    assert [s.resource_id for s in captured] == ["E1S02"]
+
+
+async def test_generate_narration_audio_blank_text_reported(fake_ctx: ToolContext, monkeypatch) -> None:
+    """novel_text 空白的段不能静默丢弃：不入队、在输出中可见，显式点名时按错误上报。"""
+    from server.agent_runtime.sdk_tools import enqueue_narration_audio as mod
+
+    script = _narration_audio_script()
+    script["segments"].append({"segment_id": "E1S03", "novel_text": "   ", "generated_assets": {}})
+    fake_ctx.pm.script_payload = script  # type: ignore[attr-defined]
+    captured: list[Any] = []
+
+    async def fake_batch(*, project_name, specs, on_success=None, on_failure=None):
+        from lib.generation_queue_client import BatchTaskResult
+
+        captured.extend(specs)
+        return [
+            BatchTaskResult(resource_id=s.resource_id, task_id="t1", status="succeeded", result={}) for s in specs
+        ], []
+
+    monkeypatch.setattr(mod, "batch_enqueue_and_wait", fake_batch)
+    tool_obj = mod.generate_narration_audio_tool(fake_ctx)
+
+    # 扫描模式：空白段跳过且在输出中告警，不阻塞其余段，不算整体失败
+    out = await _call(tool_obj, {"script": "episode_1.json"})
+    assert out.get("is_error") is not True, out
+    assert [s.resource_id for s in captured] == ["E1S01"]
+    assert "E1S03" in out["content"][0]["text"]
+
+    # 显式点名空白段：该段按失败上报，header 计数与 is_error 口径一致
+    captured.clear()
+    out = await _call(tool_obj, {"script": "episode_1.json", "segment_ids": ["E1S03"]})
+    assert out.get("is_error") is True
+    assert captured == []
+    text = out["content"][0]["text"]
+    assert "E1S03" in text
+    assert "0 succeeded, 1 failed" in text
+
+
+async def test_generate_narration_audio_partial_unmatched_reported(fake_ctx: ToolContext, monkeypatch) -> None:
+    """部分 id 不命中不能静默丢弃：命中的照常入队，未命中的按失败上报。"""
+    from server.agent_runtime.sdk_tools import enqueue_narration_audio as mod
+
+    fake_ctx.pm.script_payload = _narration_audio_script()  # type: ignore[attr-defined]
+    captured: list[Any] = []
+
+    async def fake_batch(*, project_name, specs, on_success=None, on_failure=None):
+        from lib.generation_queue_client import BatchTaskResult
+
+        captured.extend(specs)
+        return [
+            BatchTaskResult(resource_id=s.resource_id, task_id="t1", status="succeeded", result={}) for s in specs
+        ], []
+
+    monkeypatch.setattr(mod, "batch_enqueue_and_wait", fake_batch)
+    tool_obj = mod.generate_narration_audio_tool(fake_ctx)
+    out = await _call(tool_obj, {"script": "episode_1.json", "segment_ids": ["E1S01", "E1S99"]})
+
+    assert out.get("is_error") is True
+    assert [s.resource_id for s in captured] == ["E1S01"]
+    text = out["content"][0]["text"]
+    assert "1 succeeded, 1 failed" in text
+    assert "E1S99" in text and "片段不存在" in text
+
+
+async def test_generate_narration_audio_rejects_drama_script(fake_ctx: ToolContext) -> None:
+    from server.agent_runtime.sdk_tools import enqueue_narration_audio as mod
+
+    fake_ctx.pm.script_payload = {  # type: ignore[attr-defined]
+        "content_mode": "drama",
+        "episode": 1,
+        "scenes": [{"scene_id": "E1S01", "generated_assets": {}}],
+    }
+    tool_obj = mod.generate_narration_audio_tool(fake_ctx)
+    out = await _call(tool_obj, {"script": "episode_1.json"})
+    assert out.get("is_error") is True
+    assert "narration" in out["content"][0]["text"]
+
+
+async def test_generate_narration_audio_rejects_reference_video_script(fake_ctx: ToolContext) -> None:
+    """reference_video 模式无 segments，必须显式报错而非假装'已全部生成'。"""
+    from server.agent_runtime.sdk_tools import enqueue_narration_audio as mod
+
+    fake_ctx.pm.script_payload = {  # type: ignore[attr-defined]
+        "content_mode": "narration",
+        "generation_mode": "reference_video",
+        "episode": 1,
+        "video_units": [{"unit_id": "E1U1"}],
+    }
+    tool_obj = mod.generate_narration_audio_tool(fake_ctx)
+    out = await _call(tool_obj, {"script": "episode_1.json"})
+    assert out.get("is_error") is True
+    assert "reference_video" in out["content"][0]["text"]
+
+
+async def test_generate_narration_audio_rejects_string_segment_ids(fake_ctx: ToolContext) -> None:
+    """segment_ids 传裸字符串会被逐字符迭代成 {'E','1','S'...}，必须显式拒绝。"""
+    from server.agent_runtime.sdk_tools import enqueue_narration_audio as mod
+
+    fake_ctx.pm.script_payload = _narration_audio_script()  # type: ignore[attr-defined]
+    tool_obj = mod.generate_narration_audio_tool(fake_ctx)
+    out = await _call(tool_obj, {"script": "episode_1.json", "segment_ids": "E1S01"})
+    assert out.get("is_error") is True
+    assert "数组" in out["content"][0]["text"]
+
+
+async def test_generate_narration_audio_skips_segment_without_id(fake_ctx: ToolContext, monkeypatch) -> None:
+    """缺 segment_id 的片段不能让整批中断：跳过并告警，其余片段照常入队。"""
+    from server.agent_runtime.sdk_tools import enqueue_narration_audio as mod
+
+    script = _narration_audio_script()
+    script["segments"].append({"novel_text": "有文本但缺 id 的片段。", "generated_assets": {}})
+    fake_ctx.pm.script_payload = script  # type: ignore[attr-defined]
+    captured: list[Any] = []
+
+    async def fake_batch(*, project_name, specs, on_success=None, on_failure=None):
+        from lib.generation_queue_client import BatchTaskResult
+
+        captured.extend(specs)
+        return [
+            BatchTaskResult(resource_id=s.resource_id, task_id="t1", status="succeeded", result={}) for s in specs
+        ], []
+
+    monkeypatch.setattr(mod, "batch_enqueue_and_wait", fake_batch)
+    tool_obj = mod.generate_narration_audio_tool(fake_ctx)
+    out = await _call(tool_obj, {"script": "episode_1.json"})
+
+    assert out.get("is_error") is not True, out
+    assert [s.resource_id for s in captured] == ["E1S01"]
+    assert "跳过 1 个缺少 segment_id 的片段" in out["content"][0]["text"]
+
+
+async def test_generate_narration_audio_no_match_error(fake_ctx: ToolContext) -> None:
+    from server.agent_runtime.sdk_tools import enqueue_narration_audio as mod
+
+    fake_ctx.pm.script_payload = _narration_audio_script()  # type: ignore[attr-defined]
+    tool_obj = mod.generate_narration_audio_tool(fake_ctx)
+    out = await _call(tool_obj, {"script": "episode_1.json", "segment_ids": ["NO_SUCH"]})
+    assert out.get("is_error") is True
+    assert "没有找到匹配的片段" in out["content"][0]["text"]
+
+
+async def test_generate_narration_audio_all_done(fake_ctx: ToolContext) -> None:
+    from server.agent_runtime.sdk_tools import enqueue_narration_audio as mod
+
+    script = _narration_audio_script()
+    script["segments"][0]["generated_assets"] = {"narration_audio": "audio/segment_E1S01.wav"}
+    fake_ctx.pm.script_payload = script  # type: ignore[attr-defined]
+    tool_obj = mod.generate_narration_audio_tool(fake_ctx)
+    out = await _call(tool_obj, {"script": "episode_1.json"})
+    assert out.get("is_error") is not True
+    assert "所有片段的旁白音频都已生成" in out["content"][0]["text"]
+
+
+async def test_generate_narration_audio_task_failures_surface(fake_ctx: ToolContext, monkeypatch) -> None:
+    from server.agent_runtime.sdk_tools import enqueue_narration_audio as mod
+
+    fake_ctx.pm.script_payload = _narration_audio_script()  # type: ignore[attr-defined]
+
+    async def fake_batch(*, project_name, specs, on_success=None, on_failure=None):
+        from lib.generation_queue_client import BatchTaskResult
+
+        fails = [
+            BatchTaskResult(resource_id=s.resource_id, task_id="t1", status="failed", error="provider down")
+            for s in specs
+        ]
+        return [], fails
+
+    monkeypatch.setattr(mod, "batch_enqueue_and_wait", fake_batch)
+    tool_obj = mod.generate_narration_audio_tool(fake_ctx)
+    out = await _call(tool_obj, {"script": "episode_1.json"})
+    assert out.get("is_error") is True
+    text = out["content"][0]["text"]
+    assert "0 succeeded, 1 failed" in text
+    assert "provider down" in text
+
+
+async def test_generate_narration_audio_rejects_path_in_script_arg(fake_ctx: ToolContext) -> None:
+    from server.agent_runtime.sdk_tools import enqueue_narration_audio as mod
+
+    tool_obj = mod.generate_narration_audio_tool(fake_ctx)
+    out = await _call(tool_obj, {"script": "../etc/passwd"})
+    assert out.get("is_error") is True
+    assert "路径分隔符" in out["content"][0]["text"]
 
 
 # ---------------------------------------------------------------------------
@@ -743,3 +1023,153 @@ class TestBuildPrompt:
         assert "画风：" not in out
         assert out.startswith("Style: 真人电视剧风格")
         assert out.endswith("村口黄昏的长镜头")
+
+
+# ---------------------------------------------------------------------------
+# episode_planning — plan_episodes / replan_episodes 薄包装
+# ---------------------------------------------------------------------------
+
+
+def _fake_planner_cls(result: Any, captured: dict[str, Any] | None = None):
+    """构造可注入的 EpisodePlanner 替身：create() 工厂 + plan/replan 返回预置结果。"""
+
+    class _FakePlanner:
+        def __init__(self) -> None:
+            pass
+
+        @classmethod
+        async def create(cls, project_path):
+            if captured is not None:
+                captured["project_path"] = project_path
+            return cls()
+
+        async def plan(self):
+            if isinstance(result, BaseException):
+                raise result
+            return result
+
+        async def replan(self, from_episode, instructions, *, confirm_consumed=False):
+            if captured is not None:
+                captured["replan_args"] = (from_episode, instructions, confirm_consumed)
+            if isinstance(result, BaseException):
+                raise result
+            return result
+
+    return _FakePlanner
+
+
+async def test_plan_episodes_happy(fake_ctx: ToolContext, monkeypatch) -> None:
+    from lib.episode_planner import EpisodePlanSummary, PlanResult
+    from server.agent_runtime.sdk_tools import episode_planning as mod
+
+    captured: dict[str, Any] = {}
+    result = PlanResult(
+        episodes=[
+            EpisodePlanSummary(
+                episode=1, title="古玉藏诀", hook="剑诀来历成谜", reading_units=812, ledger_status="planned"
+            ),
+            EpisodePlanSummary(
+                episode=2, title="城门遇袭", hook="少女是谁", reading_units=903, ledger_status="planned"
+            ),
+        ],
+        cursor={"source_file": "source/novel.txt", "offset": 1715},
+    )
+    monkeypatch.setattr(mod, "EpisodePlanner", _fake_planner_cls(result, captured))
+    out = await _call(mod.plan_episodes_tool(fake_ctx), {})
+
+    assert out.get("is_error") is not True
+    text = out["content"][0]["text"]
+    assert "古玉藏诀" in text and "剑诀来历成谜" in text and "812" in text
+    assert "城门遇袭" in text
+    assert captured["project_path"] == fake_ctx.project_path
+
+
+async def test_plan_episodes_source_exhausted(fake_ctx: ToolContext, monkeypatch) -> None:
+    from lib.episode_planner import PlanResult
+    from server.agent_runtime.sdk_tools import episode_planning as mod
+
+    result = PlanResult(episodes=[], cursor=None, source_exhausted=True)
+    monkeypatch.setattr(mod, "EpisodePlanner", _fake_planner_cls(result))
+    out = await _call(mod.plan_episodes_tool(fake_ctx), {})
+
+    assert out.get("is_error") is not True
+    assert "全部规划" in out["content"][0]["text"]
+
+
+async def test_plan_episodes_error_envelope(fake_ctx: ToolContext, monkeypatch) -> None:
+    from lib.episode_planner import EpisodePlanningError
+    from server.agent_runtime.sdk_tools import episode_planning as mod
+
+    monkeypatch.setattr(mod, "EpisodePlanner", _fake_planner_cls(EpisodePlanningError("校验耗尽")))
+    out = await _call(mod.plan_episodes_tool(fake_ctx), {})
+
+    assert out.get("is_error") is True
+    assert "校验耗尽" in out["content"][0]["text"]
+
+
+async def test_replan_episodes_passes_args_and_reports_stale(fake_ctx: ToolContext, monkeypatch) -> None:
+    from lib.episode_planner import EpisodePlanSummary, PlanResult
+    from server.agent_runtime.sdk_tools import episode_planning as mod
+
+    captured: dict[str, Any] = {}
+    result = PlanResult(
+        episodes=[EpisodePlanSummary(episode=2, title="辞别下山", hook="甲", reading_units=700, ledger_status="stale")],
+        cursor=None,
+        stale_episodes=[2],
+        settings_updated={"episode_target_units": 800},
+    )
+    monkeypatch.setattr(mod, "EpisodePlanner", _fake_planner_cls(result, captured))
+    out = await _call(
+        mod.replan_episodes_tool(fake_ctx),
+        {"from_episode": 2, "instructions": "每集短一点", "confirm_consumed": True},
+    )
+
+    assert out.get("is_error") is not True
+    assert captured["replan_args"] == (2, "每集短一点", True)
+    text = out["content"][0]["text"]
+    assert "stale" in text
+    assert "episode_target_units" in text
+
+
+async def test_replan_episodes_confirmation_required(fake_ctx: ToolContext, monkeypatch) -> None:
+    from lib.episode_planner import ReplanConfirmationRequired
+    from server.agent_runtime.sdk_tools import episode_planning as mod
+
+    monkeypatch.setattr(mod, "EpisodePlanner", _fake_planner_cls(ReplanConfirmationRequired(consumed_episodes=[2, 3])))
+    out = await _call(mod.replan_episodes_tool(fake_ctx), {"from_episode": 2, "instructions": "重排"})
+
+    assert out.get("is_error") is not True  # 预期内的流程出口，不是错误
+    text = out["content"][0]["text"]
+    assert "已消费" in text and "confirm_consumed" in text
+
+
+async def test_replan_episodes_rejects_missing_instructions(fake_ctx: ToolContext) -> None:
+    from server.agent_runtime.sdk_tools import episode_planning as mod
+
+    out = await _call(mod.replan_episodes_tool(fake_ctx), {"from_episode": 2})
+    assert out.get("is_error") is True
+
+
+async def test_replan_episodes_rejects_string_confirm_consumed(fake_ctx: ToolContext) -> None:
+    """confirm_consumed 是确认安全边界：非布尔值（如字符串 "false"）必须拒绝而非真值化。"""
+    from server.agent_runtime.sdk_tools import episode_planning as mod
+
+    out = await _call(
+        mod.replan_episodes_tool(fake_ctx),
+        {"from_episode": 2, "instructions": "重排", "confirm_consumed": "false"},
+    )
+    assert out.get("is_error") is True
+    assert "confirm_consumed" in out["content"][0]["text"]
+
+
+async def test_replan_episodes_rejects_non_integer_from_episode(fake_ctx: ToolContext) -> None:
+    """from_episode 必须是 JSON 整数：布尔与字符串都拒绝。"""
+    from server.agent_runtime.sdk_tools import episode_planning as mod
+
+    for bad in (True, "2"):
+        out = await _call(
+            mod.replan_episodes_tool(fake_ctx),
+            {"from_episode": bad, "instructions": "重排"},
+        )
+        assert out.get("is_error") is True
+        assert "from_episode" in out["content"][0]["text"]

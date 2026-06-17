@@ -1,30 +1,45 @@
 """SDK MCP tool for editing project.json assets by table + name 或顶层 settings 字段。
 
-把 agent 对 ``project.json`` 角色/场景/道具的写入收归 ``patch_project``：按 table
-（characters/scenes/props）+ name **upsert**（不存在则加、存在则改字段），经
+把 agent 对 ``project.json`` 角色/场景/道具/产品的写入收归 ``patch_project``：按 table
+（characters/scenes/props/products）+ name **upsert**（不存在则加、存在则改字段），经
 ``ProjectManager.upsert_assets`` 在单一文件锁内 read-modify-write，apply 后落盘前做结构
 校验，非法则不写。取代脆弱的单行 CLI-JSON 脚本 ``add_assets.py``（且把「只能加」扩为「可改」）。
 
-同一工具同时承担顶层 ``settings`` 字段写入（白名单驱动），首期支持 ``episode_target_units``，
+同一工具同时承担顶层 ``settings`` 字段写入（白名单驱动，见 ``_SETTINGS_WHITELIST``），
 以及项目概述 ``overview``（synopsis/genre/theme/world_setting，merge 语义）的编辑。
 ``table + entries`` / ``settings`` / ``overview`` 三选一,在 ``update_project`` 锁内 RMW 同源。
 """
 
 from __future__ import annotations
 
+import math
 from typing import Any
 
 from claude_agent_sdk import tool
 
+from lib.asset_types import ASSET_SPECS
 from server.agent_runtime.sdk_tools._context import ToolContext, tool_error
 
-_TABLES = ("characters", "scenes", "props")
+# 资产表清单从 ASSET_SPECS 派生，新增资产类型时 schema enum 自动跟进。
+_TABLES = tuple(spec.bucket_key for spec in ASSET_SPECS.values())
 
 # 顶层 settings 白名单。新增项 append 到 tuple,并在 _validate_setting_value 加分支。
 # source_language: overview 生成是非必经路径(generate_overview=false / overview 失败时
 # 源语言不会落盘),需要给 agent 在用户确认后写入的恢复通道,带 zh/en/vi enum 校验防乱填。
-_SETTINGS_WHITELIST = ("episode_target_units", "source_language")
+# planning_window_chars / planning_max_episodes: 分集规划工具的窗口字数与每批集数覆盖项,
+# null 时回退工具内部默认。
+# narration_voice / narration_speed: 项目级旁白音色与语速覆盖项,null 时回退全局配置。
+_SETTINGS_WHITELIST = (
+    "episode_target_units",
+    "source_language",
+    "brief",
+    "planning_window_chars",
+    "planning_max_episodes",
+    "narration_voice",
+    "narration_speed",
+)
 _SOURCE_LANGUAGE_VALUES = ("zh", "en", "vi")
+_POSITIVE_INT_SETTINGS = ("episode_target_units", "planning_window_chars", "planning_max_episodes")
 
 # 项目概述（project["overview"]）可经本工具编辑的字段白名单。merge 语义:只改传入字段。
 _OVERVIEW_FIELDS = ("synopsis", "genre", "theme", "world_setting")
@@ -44,7 +59,7 @@ def patch_project_tool(ctx: ToolContext):
                 "table": {
                     "type": "string",
                     "enum": list(_TABLES),
-                    "description": "(资产 upsert 分支)资产表:characters / scenes / props",
+                    "description": "(资产 upsert 分支)资产表:characters / scenes / props / products",
                 },
                 "entries": {
                     "type": "object",
@@ -119,6 +134,10 @@ def _apply_settings(ctx: ToolContext, settings: dict[str, Any]) -> dict[str, Any
     diagnostics: dict[str, tuple[str, Any]] = {}
 
     def _mutate(project: dict[str, Any]) -> None:
+        # brief 仅广告/短片项目可用（与 DataValidator / 路由层同一约束），
+        # 在持锁读到 content_mode 后门控，整体失败不落盘
+        if "brief" in settings and project.get("content_mode") != "ad":
+            raise ValueError("brief 仅广告/短片项目（content_mode=ad）可用")
         for key, value in settings.items():
             current = project.get(key)
             if value is None:
@@ -185,17 +204,41 @@ def _format_overview_result(updated: dict[str, str]) -> str:
 
 def _validate_setting_value(key: str, value: Any) -> None:
     """settings 字段值类型校验。新增白名单字段时在此 dispatch。"""
-    if key == "episode_target_units":
+    if key in _POSITIVE_INT_SETTINGS:
         if value is None:
             return
         if isinstance(value, bool) or not isinstance(value, int) or value < 1:
-            raise ValueError(f"episode_target_units 必须是正整数或 null,收到 {value!r}")
+            raise ValueError(f"{key} 必须是正整数或 null,收到 {value!r}")
         return
     if key == "source_language":
         if value is None:
             return
         if not isinstance(value, str) or value not in _SOURCE_LANGUAGE_VALUES:
             raise ValueError(f"source_language 必须是 {list(_SOURCE_LANGUAGE_VALUES)} 之一或 null,收到 {value!r}")
+        return
+    if key == "brief":
+        if value is None:
+            return
+        if not isinstance(value, str):
+            raise ValueError(f"brief 必须是字符串或 null,收到 {value!r}")
+        return
+    if key == "narration_voice":
+        if value is None:
+            return
+        if not isinstance(value, str) or not value.strip():
+            raise ValueError(f"narration_voice 必须是非空字符串或 null,收到 {value!r}")
+        return
+    if key == "narration_speed":
+        if value is None:
+            return
+        is_number = isinstance(value, (int, float)) and not isinstance(value, bool)
+        try:
+            is_valid = is_number and math.isfinite(value) and value > 0
+        except OverflowError:
+            # 超出 float 范围的巨大整数在 isfinite 的 float 转换中溢出，等同非有限值
+            is_valid = False
+        if not is_valid:
+            raise ValueError(f"narration_speed 必须是正的有限数值或 null,收到 {value!r}")
         return
     # 不应到这,白名单校验在调用前
     raise ValueError(f"settings 字段 {key!r} 缺类型校验")

@@ -24,9 +24,9 @@
 
 ### 工具调用
 
-- **业务入队 / 文本生成 / 能力查询**：统一走 `mcp__arcreel__*` 系列 SDK in-process MCP tool（角色/场景/道具/分镜/视频/宫格/集脚本/规范化剧本/视频能力查询）。它们跑在 server 主进程，不受 sandbox 网络白名单约束，agent 直接以 tool 形式调用。
+- **业务入队 / 文本生成 / 能力查询**：统一走 `mcp__arcreel__*` 系列 SDK in-process MCP tool（角色/场景/道具/分镜/视频/宫格/集脚本/规范化剧本/分集规划与重排/视频能力查询）。它们跑在 server 主进程，不受 sandbox 网络白名单约束，agent 直接以 tool 形式调用。
 - **编辑项目 JSON**：修改剧本（`scripts/*.json`）或角色/场景/道具（`project.json`）**一律走 `mcp__arcreel__*` 编辑工具**——剧本改字段用 `patch_episode_script`，改分集标题用 `patch_episode_meta`，增/删/拆分镜用 `insert_segment` / `remove_segment` / `split_segment`，角色/场景/道具用 `patch_project`。**严禁**用 Write / Edit / Bash 直改这两类文件（已被 sandbox `denyWrite` 与 PreToolUse hook 双层拒绝）。**改 prompt 必重生**：用 `patch_episode_script` 改了某分镜的 `image_prompt` / `video_prompt` 后，工具不会自动作废旧图/视频，必须紧接着调对应生成工具重新生成该分镜，否则会留下「新 prompt + 旧画面」的陈旧。
-- **Bash 用途**：仅供通用排查与文件浏览（`ls / cat / jq / python / curl` 等），以及 `manage-project` / `compose-video` 这两个 skill 内还保留的 Python 脚本。
+- **Bash 用途**：仅供通用排查与文件浏览（`ls / cat / jq / python / curl` 等），以及 `compose-video` skill 内还保留的 Python 脚本。
 - **敏感文件保护**：`.env` / `vertex_keys/` / `.system_config.json*` / `.arcreel.db*` / `.claude/settings.json` 由 sandbox profile（`filesystem.denyRead`）内核级拒绝读取，并由 PreToolUse 文件访问 hook 双重防御；代码文件（.py/.js/.ts/.tsx/.sh/.yaml/.yml/.toml）受运行时 hook 阻止写入。
 
 ### 路径规范
@@ -35,7 +35,7 @@ agent session 的当前工作目录（cwd）已绑定到当前项目根，**所�
 
 - **Read / Edit / Write / Glob / Grep**：`file_path` 使用**绝对路径**
 - **Bash 调用 skill 脚本**：使用**相对项目根 cwd** 的路径，例如：
-  - ✅ `source/episode_1.txt`、`drafts/episode_1/step1_segments.md`、`source/_remaining.txt`
+  - ✅ `source/episode_1.txt`、`drafts/episode_1/step1_segments.md`、`scripts/episode_1.json`
   - ❌ `projects/{项目名}/source/episode_1.txt`（双前缀，占位符替换或拼接出错就会落到 projects 根）
 - **严禁**在工具参数中出现 `projects/{...}/` 前缀；该前缀仅用于文档说明项目目录结构，**不可直接作为参数传给任何工具**
 - skill 脚本内部已加 cwd 校验，cwd 漂离当前项目目录时会直接拒绝执行
@@ -85,7 +85,7 @@ agent session 的当前工作目录（cwd）已绑定到当前项目根，**所�
   ├─ dispatch → normalize-drama-script       剧集模式规范化剧本
   ├─ dispatch → split-reference-video-units  参考模式 video_unit 拆分
   ├─ dispatch → create-episode-script        JSON 剧本生成（预加载 generate-script skill）
-  └─ dispatch → generate-assets              资产生成（角色/场景/道具/分镜/视频）
+  └─ dispatch → generate-assets              资产生成（角色/场景/道具/分镜/视频/旁白配音）
 ```
 
 ### Skill/Agent 边界原则
@@ -112,12 +112,13 @@ agent session 的当前工作目录（cwd）已绑定到当前项目根，**所�
 | Skill | 触发命令 | 功能 |
 |-------|---------|------|
 | manga-workflow | `/manga-workflow` | 编排 skill：状态检测 + subagent dispatch + 用户确认 |
-| manage-project | — | 项目管理工具集：分集切分（peek+split）、角色/场景/道具批量写入 |
+| manage-project | — | 项目管理工具集：角色/场景/道具批量写入、项目 settings 与概述编辑 |
 | generate-script | — | 调用项目配置的文本模型生成 JSON 剧本（由 subagent 调用） |
 | generate-assets | `/generate-assets` | 统一资产生成：可指定 `type=character\|scene\|prop`，省略则三类并行 |
 | generate-storyboard | `/generate-storyboard` | 生成分镜图片（storyboard 模式） |
 | generate-grid | `/generate-grid` | 生成宫格分镜图（grid 模式：按 segment_break 分组的链式宫格） |
 | generate-video | `/generate-video` | 生成视频 |
+| generate-narration-audio | `/generate-narration-audio` | 生成旁白配音（按段 TTS，只依赖剧本 novel_text） |
 | compose-video | `/compose-video` | 视频后期合成（BGM、片头片尾、多集拼接，ffmpeg） |
 
 ## 快速开始
@@ -130,15 +131,16 @@ agent session 的当前工作目录（cwd）已绑定到当前项目根，**所�
 
 1. **项目设置**：创建项目（创建时确定 `content_mode`，之后不可变）、选择 `generation_mode`、上传小说、生成项目概述
 2. **全局角色/场景/道具提取** → dispatch `analyze-assets` subagent
-3. **分集规划** → 主 agent 直接执行 peek+split 切分（manage-project 工具集）
-4. **单集预处理** → 按 `effective_mode` 选：
-   - reference_video → `split-reference-video-units`
-   - narration → `split-narration-segments`
-   - drama → `normalize-drama-script`
-5. **JSON 剧本生成** → dispatch `create-episode-script` subagent
+3. **分集规划** → 主 agent 调用 `mcp__arcreel__plan_episodes` 服务端工具规划一批集（账本+派生集文件由工具维护）+ 批级审阅，意见经 `mcp__arcreel__replan_episodes` 一次性重排
+4. **单集预处理** → 按 `effective_mode` × `content_mode` 三分支选（中间文件统一位于 `drafts/episode_{N}/`）：
+   - reference_video（任一 content_mode）→ `split-reference-video-units`（产出 `step1_reference_units.md`）
+   - storyboard / grid + narration → `split-narration-segments`（产出 `step1_segments.md`）
+   - storyboard / grid + drama → `normalize-drama-script`（产出 `step1_normalized_script.md`）
+5. **JSON 剧本生成** → dispatch `create-episode-script` subagent；中间文件被修改/重拆后必须重新执行本阶段
 6. **资产设计（character/scene/prop 三类并行）** → dispatch `generate-assets` subagent
 7. **分镜图生成**：仅 `storyboard` / `grid` 模式；`reference_video` 跳过 → dispatch `generate-assets` subagent
 8. **视频生成** → dispatch `generate-assets` subagent（脚本自动按 video_units/segments/scenes 分派）
+9. **旁白配音**：仅 `storyboard` / `grid` 模式（`reference_video` 无 segments，跳过） → dispatch `generate-assets` subagent（按段 TTS；只依赖剧本 `novel_text`、独立于视频，剧本生成后即可推进）
 
 工作流支持**灵活入口**：状态检测自动定位到第一个未完成的阶段，支持中断后恢复。
 视频生成完成后，用户可在 Web 端导出为剪映草稿。
@@ -167,6 +169,7 @@ projects/{项目名}/      # ← session cwd 已在此，下面均为 cwd 内的
 ├── grids/             # 宫格图（grid 模式）
 ├── videos/            # 生成的视频片段（storyboard / grid 模式）
 ├── reference_videos/  # 生成的 video_unit（reference_video 模式）
+├── audio/             # 旁白音频（说书模式，首次生成时创建）
 ├── thumbnails/        # 首帧缩略图
 └── output/            # 最终输出
 ```
@@ -176,7 +179,7 @@ projects/{项目名}/      # ← session cwd 已在此，下面均为 cwd 内的
 - `schema_version`：项目数据格式版本（当前 1）
 - `title`、`content_mode`（`narration`/`drama`）、`generation_mode`（`storyboard`/`grid`/`reference_video`）、`style`、`style_description`
 - `overview`：项目概述（synopsis、genre、theme、world_setting）
-- `episodes`：剧集核心元数据（episode、title、script_file、可选 `generation_mode` 覆盖）
+- `episodes`：分集账本（单一真相源）：episode、title、script_file、可选 `generation_mode` 覆盖，以及账本字段 `source_range`（原文范围）/ `hook`（集尾钩子）/ `outline`（drama 分集大纲）/ `ledger_status`（planned/consumed/stale/unanchored）；顶层 `planning_cursor` 标记下一批规划起点。`source/episode_N.txt` 是账本的派生物，由规划工具维护，不要手工编辑或重命名
 - `characters`：角色完整定义（description、voice_style、character_sheet）
 - `scenes`：场景完整定义（description、scene_sheet）
 - `props`：道具完整定义（description、prop_sheet）

@@ -5,17 +5,19 @@ export type CostBreakdown = Record<string, number>;
 export interface CostByType {
   image?: CostBreakdown;
   video?: CostBreakdown;
+  audio?: CostBreakdown;
   characters?: CostBreakdown;
   scenes?: CostBreakdown;
   props?: CostBreakdown;
+  products?: CostBreakdown;
 }
 
 /** 单个 segment 的费用 */
 export interface SegmentCost {
   segment_id: string;
   duration_seconds: number;
-  estimate: { image: CostBreakdown; video: CostBreakdown };
-  actual: { image: CostBreakdown; video: CostBreakdown };
+  estimate: { image: CostBreakdown; video: CostBreakdown; audio?: CostBreakdown };
+  actual: { image: CostBreakdown; video: CostBreakdown; audio?: CostBreakdown };
 }
 
 /** 单集费用 */
@@ -35,7 +37,7 @@ export interface ModelInfo {
 /** 费用估算 API 响应 */
 export interface CostEstimateResponse {
   project_name: string;
-  models: { image: ModelInfo; video: ModelInfo };
+  models: { image: ModelInfo; video: ModelInfo; audio?: ModelInfo };
   episodes: EpisodeCost[];
   project_totals: { estimate: CostByType; actual: CostByType };
 }

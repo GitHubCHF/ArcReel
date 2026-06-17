@@ -7,10 +7,11 @@ import { API, ConflictError } from "@/api";
 import { useProjectsStore } from "@/stores/projects-store";
 import { useAppStore } from "@/stores/app-store";
 import { useCostStore } from "@/stores/cost-store";
-import { formatCost, totalBreakdown } from "@/utils/cost-format";
+import { costEntries, formatCost, totalBreakdown } from "@/utils/cost-format";
 import { errMsg } from "@/utils/async";
 
 import { WelcomeCanvas } from "./WelcomeCanvas";
+import { AdInitCanvas } from "./AdInitCanvas";
 import { ConflictModal, type ConflictResolution } from "./ConflictModal";
 import { AgentHandoffHint } from "@/components/copilot/AgentHandoffHint";
 
@@ -42,6 +43,8 @@ export function OverviewCanvas({ projectName, projectData }: OverviewCanvasProps
   const { t } = useTranslation(["dashboard", "common"]);
   const tRef = useRef(t);
   tRef.current = t;
+  // 广告/短片项目恒单集：界面隐藏「集」语义，区块按单视频呈现
+  const isAd = projectData?.content_mode === "ad";
   const projectTotals = useCostStore((s) => s.costData?.project_totals);
   const getEpisodeCost = useCostStore((s) => s.getEpisodeCost);
   const costLoading = useCostStore((s) => s.loading);
@@ -216,6 +219,12 @@ export function OverviewCanvas({ projectName, projectData }: OverviewCanvasProps
   const status = projectData.status;
   const overview = projectData.overview;
   const showWelcome = !overview && (projectData.episodes?.length ?? 0) === 0;
+  // ad 项目恒单集（episodes 非空），不会落入 showWelcome；建项后素材全空时进入初始化页：
+  // 上传产品图 + 产品描述 + brief + 可选 sheet 生成。任一素材就绪即切回概览。
+  const showAdInit =
+    isAd &&
+    Object.keys(projectData.products ?? {}).length === 0 &&
+    !(projectData.brief ?? "").trim();
 
   return (
     <div className="h-full overflow-y-auto">
@@ -247,12 +256,16 @@ export function OverviewCanvas({ projectName, projectData }: OverviewCanvasProps
             >
               {projectData.content_mode === "narration"
                 ? t("narration_visuals_mode")
-                : t("drama_animation_mode")}
+                : projectData.content_mode === "ad"
+                  ? t("ad_short_video_mode")
+                  : t("drama_animation_mode")}
             </p>
           </div>
         </header>
 
-        {showWelcome ? (
+        {showAdInit ? (
+          <AdInitCanvas projectName={projectName} onDone={refreshProject} />
+        ) : showWelcome ? (
           <WelcomeCanvas
             projectName={projectName}
             projectTitle={projectData.title}
@@ -606,6 +619,9 @@ export function OverviewCanvas({ projectName, projectData }: OverviewCanvasProps
                     rows={[
                       { label: t("storyboard"), value: formatCost(projectTotals.estimate.image) },
                       { label: t("video"), value: formatCost(projectTotals.estimate.video) },
+                      ...(costEntries(projectTotals.estimate.audio).length > 0
+                        ? [{ label: t("media_narration_title"), value: formatCost(projectTotals.estimate.audio) }]
+                        : []),
                     ]}
                     total={formatCost(totalBreakdown(projectTotals.estimate))}
                     totalLabel={t("cost_total_short")}
@@ -616,7 +632,10 @@ export function OverviewCanvas({ projectName, projectData }: OverviewCanvasProps
                     rows={[
                       { label: t("storyboard"), value: formatCost(projectTotals.actual.image) },
                       { label: t("video"), value: formatCost(projectTotals.actual.video) },
-                      ...(["characters", "scenes", "props"] as const)
+                      ...(costEntries(projectTotals.actual.audio).length > 0
+                        ? [{ label: t("media_narration_title"), value: formatCost(projectTotals.actual.audio) }]
+                        : []),
+                      ...(["characters", "scenes", "props", "products"] as const)
                         .map((kind) => {
                           const bucket = projectTotals.actual[kind];
                           if (bucket == null) return null;
@@ -650,9 +669,9 @@ export function OverviewCanvas({ projectName, projectData }: OverviewCanvasProps
                   className="display-serif text-[15px] font-semibold tracking-tight"
                   style={{ color: "var(--color-text)" }}
                 >
-                  {t("episodes_title")}
+                  {isAd ? t("ad_video_section_title") : t("episodes_title")}
                 </h3>
-                {(projectData.episodes?.length ?? 0) > 0 && (
+                {!isAd && (projectData.episodes?.length ?? 0) > 0 && (
                   <span
                     className="num text-[10.5px]"
                     style={{ color: "var(--color-text-4)" }}
@@ -681,21 +700,23 @@ export function OverviewCanvas({ projectName, projectData }: OverviewCanvasProps
                           boxShadow: "inset 0 1px 0 oklch(1 0 0 / 0.03)",
                         }}
                       >
-                        <span
-                          className="rounded px-1.5 py-0.5 text-[10.5px] font-bold"
-                          style={{
-                            color: "var(--color-accent-2)",
-                            background: "var(--color-accent-dim)",
-                            border: "1px solid var(--color-accent-soft)",
-                          }}
-                        >
-                          E{ep.episode}
-                        </span>
+                        {!isAd && (
+                          <span
+                            className="rounded px-1.5 py-0.5 text-[10.5px] font-bold"
+                            style={{
+                              color: "var(--color-accent-2)",
+                              background: "var(--color-accent-dim)",
+                              border: "1px solid var(--color-accent-soft)",
+                            }}
+                          >
+                            E{ep.episode}
+                          </span>
+                        )}
                         <span style={{ color: "var(--color-text)", fontFamily: "var(--font-sans)" }}>
-                          {ep.title}
+                          {ep.title || (isAd ? projectData.title : "")}
                         </span>
                         <span style={{ color: "var(--color-text-4)" }}>
-                          {t("segments_and_status", {
+                          {t(isAd ? "shots_and_status" : "segments_and_status", {
                             count: ep.scenes_count ?? "?",
                             status: t(`episode_status_label_${ep.status ?? "draft"}`),
                           })}
@@ -708,6 +729,12 @@ export function OverviewCanvas({ projectName, projectData }: OverviewCanvasProps
                               imageValue={formatCost(epCost.totals.estimate.image)}
                               videoLabel={t("video")}
                               videoValue={formatCost(epCost.totals.estimate.video)}
+                              audioLabel={t("media_narration_title")}
+                              audioValue={
+                                costEntries(epCost.totals.estimate.audio).length > 0
+                                  ? formatCost(epCost.totals.estimate.audio)
+                                  : undefined
+                              }
                               total={formatCost(totalBreakdown(epCost.totals.estimate))}
                               totalLabel={t("total")}
                               accent="warm"
@@ -719,6 +746,12 @@ export function OverviewCanvas({ projectName, projectData }: OverviewCanvasProps
                               imageValue={formatCost(epCost.totals.actual.image)}
                               videoLabel={t("video")}
                               videoValue={formatCost(epCost.totals.actual.video)}
+                              audioLabel={t("media_narration_title")}
+                              audioValue={
+                                costEntries(epCost.totals.actual.audio).length > 0
+                                  ? formatCost(epCost.totals.actual.audio)
+                                  : undefined
+                              }
                               total={formatCost(totalBreakdown(epCost.totals.actual))}
                               totalLabel={t("total")}
                               accent="good"
@@ -837,6 +870,8 @@ function CostInline({
   imageValue,
   videoLabel,
   videoValue,
+  audioLabel,
+  audioValue,
   total,
   totalLabel,
   accent,
@@ -846,6 +881,8 @@ function CostInline({
   imageValue: string;
   videoLabel: string;
   videoValue: string;
+  audioLabel?: string;
+  audioValue?: string;
   total: string;
   totalLabel: string;
   accent: "warm" | "good";
@@ -861,6 +898,14 @@ function CostInline({
         {videoLabel}{" "}
       </span>
       <span style={{ color: "var(--color-text-2)" }}>{videoValue}</span>
+      {audioLabel != null && audioValue != null && (
+        <>
+          <span className="ml-2" style={{ color: "var(--color-text-4)" }}>
+            {audioLabel}{" "}
+          </span>
+          <span style={{ color: "var(--color-text-2)" }}>{audioValue}</span>
+        </>
+      )}
       <span className="ml-2" style={{ color: "var(--color-text-4)" }}>
         {totalLabel}{" "}
       </span>

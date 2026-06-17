@@ -32,6 +32,18 @@ export interface Prop {
   prop_sheet?: string;
 }
 
+export interface Product {
+  description: string;
+  /** 标准多角度产品参考图（可选，生成/上传后回写）。 */
+  product_sheet?: string;
+  /** 品牌要素自由文本。 */
+  brand?: string;
+  /** 用户上传的产品原图路径列表（保真验收锚点，系统级字段）。 */
+  reference_images?: string[];
+  /** 卖点列表（agent 起草、用户可改）。 */
+  selling_points?: string[];
+}
+
 export interface AspectRatio {
   characters?: string;
   scenes?: string;
@@ -103,7 +115,7 @@ export interface ModelSettingEntry {
 
 export interface ProjectData {
   title: string;
-  content_mode: "narration" | "drama";
+  content_mode: "narration" | "drama" | "ad";
   style: string;
   style_template_id?: string | null;
   style_image?: string;
@@ -111,11 +123,17 @@ export interface ProjectData {
   overview?: ProjectOverview;
   aspect_ratio?: string | AspectRatio;  // 新项目为 string，旧项目可能为 dict
   default_duration?: number | null;     // 新增
+  /** 仅 ad：目标总时长（秒）。 */
+  target_duration?: number;
+  /** 仅 ad：创作诉求短文本（可空）。 */
+  brief?: string;
   schema_version?: number;
   episodes: EpisodeMeta[];
   characters: Record<string, Character>;
   scenes?: Record<string, Scene>;
   props?: Record<string, Prop>;
+  /** 产品资产（广告/短片项目使用，v1 单产品设定，字段形态为映射）。 */
+  products?: Record<string, Product>;
   /** Injected by StatusCalculator.enrich_project at read time */
   status?: ProjectStatus;
   video_backend?: string | null;

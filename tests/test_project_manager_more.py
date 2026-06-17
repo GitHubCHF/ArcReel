@@ -57,11 +57,15 @@ class TestProjectManagerMore:
         project_dir = pm.create_project("demo")
         pm.create_project_metadata("demo", "Demo", "Anime", "narration")
 
+        # products 与其他三类资产一样属于项目脚手架
+        assert (project_dir / "products").is_dir()
+
         _write(project_dir / "source" / "a.txt", "source")
         _write(project_dir / "scripts" / "episode_1.json", "{}")
         _write(project_dir / "characters" / "alice.png", "x")
         _write(project_dir / "scenes" / "s.png", "x")
         _write(project_dir / "props" / "p.png", "x")
+        _write(project_dir / "products" / "杯.png", "x")
         _write(project_dir / "storyboards" / "scene_1.png", "x")
         _write(project_dir / "videos" / "scene_1.mp4", "x")
         _write(project_dir / "output" / "final.mp4", "x")
@@ -70,6 +74,7 @@ class TestProjectManagerMore:
         status = pm.get_project_status("demo")
         assert status["current_stage"] == "completed"
         assert status["source_files"] == ["a.txt"]
+        assert status["products"] == ["杯.png"]
 
         assert pm.project_exists("demo")
         loaded = pm.load_project("demo")
@@ -96,6 +101,16 @@ class TestProjectManagerMore:
             "demo", "Demo", "Anime", "narration", extras={"image_provider_t2i": "openai/gpt-image-1"}
         )
         assert project["image_provider_t2i"] == "openai/gpt-image-1"
+
+    def test_create_project_metadata_is_latest_schema_with_planning_cursor(self, tmp_path):
+        """新项目即最新 schema 形态：版本对齐迁移目标版本，planning_cursor 以 null 初始。"""
+        from lib.project_migrations import CURRENT_SCHEMA_VERSION
+
+        pm = ProjectManager(tmp_path / "projects")
+        pm.create_project("demo")
+        project = pm.create_project_metadata("demo", "Demo", "Anime", "narration")
+        assert project["schema_version"] == CURRENT_SCHEMA_VERSION
+        assert project["planning_cursor"] is None
 
     def test_project_identifier_validation_and_empty_title(self, tmp_path):
         pm = ProjectManager(tmp_path / "projects")

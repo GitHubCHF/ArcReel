@@ -33,6 +33,8 @@ interface TimelineCanvasProps {
   ) => void | Promise<void>;
   onGenerateStoryboard?: (segmentId: string, scriptFile?: string) => void;
   onGenerateVideo?: (segmentId: string, scriptFile?: string) => void;
+  onGenerateNarration?: (segmentId: string, scriptFile?: string) => void;
+  onGenerateEpisodeNarration?: (scriptFile?: string) => void;
   durationOptions?: number[];
   onRestoreStoryboard?: () => Promise<void> | void;
   onRestoreVideo?: () => Promise<void> | void;
@@ -52,6 +54,8 @@ export function TimelineCanvas({
   onUpdatePrompt,
   onGenerateStoryboard,
   onGenerateVideo,
+  onGenerateNarration,
+  onGenerateEpisodeNarration,
   onRestoreStoryboard,
   onRestoreVideo,
   onSaveTitle,
@@ -59,6 +63,11 @@ export function TimelineCanvas({
 }: TimelineCanvasProps) {
   const { t } = useTranslation("dashboard");
   const contentMode = projectData?.content_mode ?? "narration";
+  // 分镜编辑子视图当前仅支持 narration/drama 两种剧本形状；
+  // ad 的镜头编辑视图随带货脚本生成一并落地，未落地前显式不进编辑器（不落 drama 兜底）。
+  // 未知/脏 content_mode 沿用历史兜底落 drama 视图，仅 ad 显式排除。
+  const editorContentMode: "narration" | "drama" | null =
+    contentMode === "narration" ? "narration" : contentMode === "ad" ? null : "drama";
 
   const hasScript = Boolean(episodeScript);
   const showTabs = Boolean(hasDraft);
@@ -96,14 +105,16 @@ export function TimelineCanvas({
         ? []
         : contentMode === "narration"
           ? ((episodeScript as NarrationEpisodeScript).segments ?? [])
-          : ((episodeScript as DramaEpisodeScript).scenes ?? []),
+          : contentMode === "drama"
+            ? ((episodeScript as DramaEpisodeScript).scenes ?? [])
+            : [],
     [contentMode, episodeScript, projectData],
   );
 
   // 任务派生 loading
   const tasks = useTasksStore((s) => s.tasks);
   const isGenerating = useCallback(
-    (taskType: "storyboard" | "video", segmentId: string): boolean =>
+    (taskType: "storyboard" | "video" | "tts", segmentId: string): boolean =>
       tasks.some(
         (t) =>
           t.task_type === taskType &&
@@ -120,6 +131,27 @@ export function TimelineCanvas({
   const generatingVideo = useCallback(
     (segId: string) => isGenerating("video", segId),
     [isGenerating],
+  );
+  const generatingNarration = useCallback(
+    (segId: string) => isGenerating("tts", segId),
+    [isGenerating],
+  );
+  // 批量旁白进行中：当前分集还有未完结的 tts 任务时禁用批量按钮，避免重复入队；
+  // 按本集 segment 范围判定，不影响其他分集的批量入口
+  const currentSegmentIds = useMemo(
+    () => new Set(segments.map((s) => ("segment_id" in s ? s.segment_id : s.scene_id))),
+    [segments],
+  );
+  const narrationBatchBusy = useMemo(
+    () =>
+      tasks.some(
+        (t) =>
+          t.task_type === "tts" &&
+          t.project_name === projectName &&
+          currentSegmentIds.has(t.resource_id) &&
+          (t.status === "queued" || t.status === "running"),
+      ),
+    [tasks, projectName, currentSegmentIds],
   );
 
   if (!projectData || (!episodeScript && !hasDraft)) {
@@ -156,6 +188,7 @@ export function TimelineCanvas({
   ) => onUpdatePrompt?.(segId, fieldOrPatch, value, scriptFile);
   const handleGenSb = (segId: string) => onGenerateStoryboard?.(segId, scriptFile);
   const handleGenVid = (segId: string) => onGenerateVideo?.(segId, scriptFile);
+  const handleGenNarration = (segId: string) => onGenerateNarration?.(segId, scriptFile);
 
   return (
     <div className="flex h-full flex-col overflow-hidden">
@@ -244,24 +277,36 @@ export function TimelineCanvas({
               <Sparkles className="h-3 w-3" />
               <span>{t("batch_generate_videos")}</span>
             </button>
+            {contentMode === "narration" && onGenerateEpisodeNarration && (
+              <button
+                type="button"
+                className="sv-navbtn inline-flex items-center gap-1.5"
+                disabled={narrationBatchBusy}
+                onClick={() => onGenerateEpisodeNarration(scriptFile)}
+                title={t("batch_generate_narration")}
+              >
+                <Sparkles className="h-3 w-3" />
+                <span>{t("batch_generate_narration")}</span>
+              </button>
+            )}
           </div>
         )}
       </div>
 
       {/* 主体 */}
       <div className="min-h-0 flex-1 overflow-hidden">
-        {activeTab === "preprocessing" && hasDraft ? (
+        {activeTab === "preprocessing" && hasDraft && editorContentMode ? (
           <div className="h-full overflow-y-auto p-4">
             <PreprocessingView
               projectName={projectName}
               episode={episode}
-              contentMode={contentMode}
+              contentMode={editorContentMode}
             />
           </div>
-        ) : episodeScript && segments.length > 0 ? (
+        ) : episodeScript && segments.length > 0 && editorContentMode ? (
           <ShotSplitView
             segments={segments}
-            contentMode={contentMode}
+            contentMode={editorContentMode}
             aspectRatio={aspectRatio}
             projectName={projectName}
             scriptFile={scriptFile}
@@ -269,10 +314,12 @@ export function TimelineCanvas({
             onUpdatePrompt={handleUpdatePrompt}
             onGenerateStoryboard={handleGenSb}
             onGenerateVideo={handleGenVid}
+            onGenerateNarration={handleGenNarration}
             onRestoreStoryboard={onRestoreStoryboard}
             onRestoreVideo={onRestoreVideo}
             generatingStoryboard={generatingStoryboard}
             generatingVideo={generatingVideo}
+            generatingNarration={generatingNarration}
             durationOptions={durationOptions}
           />
         ) : null}

@@ -22,9 +22,10 @@ from lib.i18n import DEFAULT_LOCALE
 from lib.i18n import _ as i18n_translate
 from lib.image_backends.base import ImageCapabilityError
 from lib.media_generator import MediaGenerator
+from lib.path_safety import safe_exists
 from lib.project_change_hints import emit_project_change_batch, project_change_source
 from lib.project_manager import ProjectManager
-from lib.prompt_builders import build_character_prompt, build_prop_prompt, build_scene_prompt
+from lib.prompt_builders import build_character_prompt, build_product_prompt, build_prop_prompt, build_scene_prompt
 from lib.prompt_utils import (
     image_prompt_to_yaml,
     is_structured_image_prompt,
@@ -273,7 +274,7 @@ async def _get_or_create_audio_backend(
     *,
     default_audio_model: str | None = None,
 ):
-    """获取或创建 AudioBackend 实例（带缓存）。本期仅内置 DashScope，自定义供应商 audio 通路是 follow-up。"""
+    """获取或创建 AudioBackend 实例（带缓存）。"""
     from lib.audio_backends import create_backend
 
     effective_model = provider_settings.get("model") or default_audio_model or None
@@ -281,9 +282,11 @@ async def _get_or_create_audio_backend(
     if cache_key in _backend_cache:
         return _backend_cache[cache_key]
 
+    # 自定义供应商走独立工厂路径
     if is_custom_provider(provider_name):
-        # 自定义供应商 audio 后端创建尚未接入；显式抛错而非静默走未注册路径，便于将来定位。
-        raise NotImplementedError("custom provider audio backend not implemented yet")
+        backend = await _create_custom_backend(provider_name, effective_model, "audio")
+        _backend_cache[cache_key] = backend
+        return backend
 
     backend_name = _PROVIDER_ID_TO_BACKEND.get(provider_name, provider_name)
     kwargs: dict = {}
@@ -400,9 +403,10 @@ async def get_media_generator(
 
 def get_aspect_ratio(project: dict, resource_type: str) -> str:
     if resource_type == "characters":
-        # 角色采用四视图横版（issue #353）
+        # 角色采用四视图横版
         return "16:9"
-    if resource_type in ("scenes", "props"):
+    if resource_type in ("scenes", "props", "products"):
+        # 多视图横排版式（product sheet 同为多角度横版）
         return "16:9"
     # 优先读顶层字段；缺失时按 content_mode 推导（向后兼容）
     val = project.get("aspect_ratio")
@@ -410,7 +414,8 @@ def get_aspect_ratio(project: dict, resource_type: str) -> str:
         return val
     if isinstance(val, dict) and resource_type in val:
         return val[resource_type]
-    return "9:16" if project.get("content_mode", "narration") == "narration" else "16:9"
+    # narration/ad 默认竖屏，drama（含未知值的历史兜底）默认横屏
+    return "9:16" if project.get("content_mode", "narration") in {"narration", "ad"} else "16:9"
 
 
 def _normalize_storyboard_prompt(prompt: str | dict, style: str) -> str:
@@ -670,6 +675,13 @@ def compute_affected_fingerprints(project_name: str, task_type: str, resource_id
                 project_path / "props" / f"{resource_id}.png",
             )
         )
+    elif task_type == "product":
+        paths.append(
+            (
+                f"products/{resource_id}.png",
+                project_path / "products" / f"{resource_id}.png",
+            )
+        )
     elif task_type == "grid":
         paths.append(
             (
@@ -913,12 +925,15 @@ async def execute_tts_task(
     from lib.config.resolver import ConfigResolver
     from lib.db import async_session_factory
 
-    voice = await ConfigResolver(async_session_factory).resolve_narration_voice(project)
+    resolver = ConfigResolver(async_session_factory)
+    voice = await resolver.resolve_narration_voice(project)
+    speed = await resolver.resolve_narration_speed(project)
 
     _, version = await generator.generate_audio_async(
         text=text,
         resource_id=resource_id,
         voice=voice,
+        speed=speed,
     )
 
     audio_rel = resource_relative_path("audio", resource_id)
@@ -1194,6 +1209,29 @@ async def execute_character_task(
 _DESIGN_PROMPT_BUILDERS: dict[str, Any] = {
     "scene": build_scene_prompt,
     "prop": build_prop_prompt,
+    "product": build_product_prompt,
+}
+
+
+def _collect_product_reference_images(project: dict, project_path: Path, resource_id: str) -> list[Path] | None:
+    """产品原图（保真验收锚点）作为 sheet 标准化整理的参考输入；缺失文件跳过。"""
+    entry = (project.get("products") or {}).get(resource_id) or {}
+    refs = entry.get("reference_images")
+    if not isinstance(refs, list):
+        return None
+    # safe_exists 同时兜住脏数据（非字符串）、越出项目目录的绝对路径 / `..` 穿越与文件缺失
+    existing = [project_path / ref for ref in refs if safe_exists(project_path, ref)]
+    if refs and not existing:
+        # 声明了原图却全部缺失：sheet 生成静默退化为纯文生图会丢失保真锚定，
+        # 留观测痕迹便于诊断（不阻塞——文件缺失可能是归档迁移等正常历史原因）
+        logger.warning("产品 '%s' 声明了 %d 张原图但磁盘均缺失，sheet 生成退化为纯文生图", resource_id, len(refs))
+    return existing or None
+
+
+# design 任务的参考图收集器差异：product 的 sheet 是「原图 → 标准多角度图」的整理，
+# 原图全量注入；scene / prop 维持纯文生图。
+_DESIGN_REFERENCE_COLLECTORS: dict[str, Any] = {
+    "product": _collect_product_reference_images,
 }
 
 
@@ -1205,10 +1243,11 @@ async def execute_design_task(
     *,
     user_id: str = DEFAULT_USER_ID,
 ) -> dict[str, Any]:
-    """合并 execute_scene_task / execute_prop_task：按 kind 查表派发。"""
+    """合并 execute_scene_task / execute_prop_task / execute_product_task：按 kind 查表派发。"""
     spec = ASSET_SPECS[kind]
     bucket_key = spec.bucket_key
     prompt_builder = _DESIGN_PROMPT_BUILDERS[kind]
+    reference_collector = _DESIGN_REFERENCE_COLLECTORS.get(kind)
 
     prompt = str(payload.get("prompt", "") or "").strip()
     if not prompt:
@@ -1216,25 +1255,29 @@ async def execute_design_task(
 
     def _prepare():
         project = get_project_manager().load_project(project_name)
+        project_path = get_project_manager().get_project_path(project_name)
         if resource_id not in project.get(bucket_key, {}):
             raise ValueError(f"{kind} not found: {resource_id}")
         style = project.get("style", "")
         style_desc = project.get("style_description", "")
         full_prompt = prompt_builder(resource_id, prompt, style, style_desc)
-        return project, full_prompt
+        refs = reference_collector(project, project_path, resource_id) if reference_collector else None
+        return project, full_prompt, refs
 
-    project, full_prompt = await asyncio.to_thread(_prepare)
+    project, full_prompt, reference_images = await asyncio.to_thread(_prepare)
+    needs_i2i = bool(reference_images)
 
-    generator = await get_media_generator(project_name, payload=payload, user_id=user_id, needs_i2i=False)
+    generator = await get_media_generator(project_name, payload=payload, user_id=user_id, needs_i2i=needs_i2i)
     aspect_ratio = get_aspect_ratio(project, bucket_key)
 
-    resolved_image = await _resolve_effective_image_backend(project, payload, needs_i2i=False)
+    resolved_image = await _resolve_effective_image_backend(project, payload, needs_i2i=needs_i2i)
     image_size = await resolve_resolution(project, resolved_image.provider_id, resolved_image.model_id)
 
     _, version = await generator.generate_image_async(
         prompt=full_prompt,
         resource_type=bucket_key,
         resource_id=resource_id,
+        reference_images=reference_images,
         aspect_ratio=aspect_ratio,
         image_size=image_size,
     )
@@ -1276,6 +1319,17 @@ async def execute_prop_task(
     task_id: str | None = None,
 ) -> dict[str, Any]:
     return await execute_design_task("prop", project_name, resource_id, payload, user_id=user_id)
+
+
+async def execute_product_task(
+    project_name: str,
+    resource_id: str,
+    payload: dict[str, Any],
+    *,
+    user_id: str = DEFAULT_USER_ID,
+    task_id: str | None = None,
+) -> dict[str, Any]:
+    return await execute_design_task("product", project_name, resource_id, payload, user_id=user_id)
 
 
 def _group_scenes_by_segment_break(items: list[dict], id_field: str) -> list[list[dict]]:
@@ -1567,6 +1621,7 @@ _TASK_EXECUTORS = {
     "character": execute_character_task,
     "scene": execute_scene_task,
     "prop": execute_prop_task,
+    "product": execute_product_task,
     "grid": execute_grid_task,
     "reference_video": _execute_reference_video_task_proxy,
 }

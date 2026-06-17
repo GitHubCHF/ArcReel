@@ -168,7 +168,11 @@ _Avoid_: 与「参考图（reference image，生成的条件输入）」混为�
 
 **全局资产库（global asset library）**：
 跨项目复用 character/scene/prop 三类资产的全局单一仓库（DB 持久化 + `_global_assets/` 图片目录），与项目以**快照复制**而非引用关联。
-_Avoid_: 把它与项目当「引用耦合」——入库 / 应用到项目都物理复制图片，改一边不影响另一边；以为改名/删除库内资产会传导到已用项目。
+_Avoid_: 把它与项目当「引用耦合」——入库 / 应用到项目都物理复制图片，改一边不影响另一边；以为改名/删除库内资产会传导到已用项目；把 product 放进来——多图列表型资产不兼容库的单图列模型，spec 以 `in_global_library=False` 豁免。
+
+**产品资产（product）**：
+第 4 个 ASSET_SPECS 条目（bucket `products`、sheet 字段 `product_sheet`、子目录 `products/`），承载广告/短片项目的带货主体。持有列表字段 `reference_images`（用户上传多张原图，保存时保留原件不压缩，是「成片产品忠实于真品」的**保真验收锚点**）与 `selling_points`（卖点列表，agent 可起草、用户可改），及自由文本 `brand`。product sheet 是可选的标准化多角度派生参考（生成时原图全量注入），须经人工确认才进下游（见 `docs/adr/0034`）。
+_Avoid_: 把 `reference_images` 交给 agent 改写——系统级字段不在 agent 白名单，更新走专用上传 API；把原图与 sheet 的锚点地位颠倒——原图必有且永远是验收基准，sheet 只是净化派生；对原图套用 2MB/q85 保存压缩——那是其它资产上传的归一化策略，对锚点过狠。
 
 **风格模版（style template）**：
 预置的整段画风 prompt 文本（真人 / 动画两类，按 id 选一）。选定时把展开后的 prompt 写入 project.json 的 `style` 字段（供注入用的快照），同时保留 `style_template_id`（可在 PATCH / 读时迁移被重新解析）；registry 改动不主动回写老项目（见 `docs/adr/0023`）。
@@ -184,9 +188,33 @@ _Avoid_: 在新代码/文档里用 clue/线索 指代场景或道具——规范
 把同一段落多个场景合并成一张 N 格联合大图一次生成（grid_4/6/9）、再切割成各场景首尾帧的分镜生成路径；与逐张图生视频（storyboard）同为 generation_mode 下的「分镜→视频」路径，核心价值在一次生成保证画风/角色一致。
 _Avoid_: 把 reference_video 当作与 grid/storyboard 同维度的第三个平级取值——它跳过分镜、是凌驾于 content_mode 之上的独立骨架，并非这种「分镜→视频」路径；逐张模式的规范值是 storyboard，而非旧用语 single。
 
+**广告/短片模式（ad）**：
+content_mode 第三值，产出单个约 `target_duration` 秒的短视频而非多集系列。剧本骨架为平铺 `shots[]`（`shot_id` 格式 E1S{n}），每镜头携带 `section`（带货框架段落标签，八值引导不硬枚举）与一等口播文案 `voiceover_text`；项目恒单集（episodes 恒为第 1 集单条），项目级新字段 `target_duration`（正整数秒）与 `brief`（创作诉求短文本，不走 source_loader），不持有 `default_duration`；generation_mode 仅开放 storyboard 与 reference_video（见 `docs/adr/0033`）。
+_Avoid_: 让 ad 落入「非 narration 即 drama」的二值兜底——所有按 content_mode 分派的机制必须显式处理第三值；把 AdShot 与 video_unit 内的 shot（参考生视频子镜头）混为一谈——前者是剧本骨架的平铺镜头、后者是 unit 内时间编排。
+
 **video_unit / shot（参考生视频单元）**：
 参考生视频模式下的生成单元：一个 video_unit 含 1–4 个 shot（子镜头），整 unit 共享一组按顺序编号的参考图（`[图N]`），跳过分镜直接由资产图生成；剧本用 `video_units[]` 而非 `segments[]` / `scenes[]` 组织。
 _Avoid_: 把 shot 与 segment（说书片段）/ DramaScene（剧集场景）混为一谈；「scene」在参考模式下三义须分辨——场景资产（scene_sheet）、剧本分镜场景（DramaScene）、镜头（shot）。
+
+**分集账本（episode ledger）**：
+project.json `episodes[]` 即分集单一真相源：条目在 episode/title/script_file 之外扩展 `source_range`（原文素材范围）、`hook`（集尾钩子）、`outline`（drama 分集大纲）与 `ledger_status`（消费状态）；物理 `source/episode_N.txt` 是派生物（见 `docs/adr/0031`）。账本字段全部可缺失——缺失即旧式条目，由可重跑的回填（`lib/episode_ledger.backfill_episode_ledger`）补账。
+_Avoid_: 以物理集文件的存在性推断分集状态或集数（Glob 推断是被替代的旧模式）；把账本字段与 StatusCalculator 读时注入的统计字段混为一类——账本持久化在 project.json，统计字段不落盘。
+
+**ledger_status（消费状态）**：
+账本条目的四态生命周期：planned（已规划未消费）/ consumed（已有下游产物：step1 中间文件、剧本或媒体）/ stale（重排后失效，标记而非删除）/ unanchored（回填无法锚定：内容对不上源文，或集文件缺失/不可读；锁定不参与重排，下游消费不受影响——有物理集文件时该文件即其最终记录）。
+_Avoid_: 与读时注入的 `status`（draft/in_production/completed）混为一谈——同一条目上两键并存、语义不同；把 unanchored 当失败（它是诚实降级，精确子串匹配不做模糊锚定）。
+
+**归一化坐标系（normalized source coordinates）**：
+source_range 与 planning_cursor 的字符偏移全部落在 `lib/episode_ledger.normalize_source_text`（Unicode NFC + 换行统一）的输出空间；按偏移切片源文前必须先对源文执行同一函数。
+_Avoid_: 拿偏移直接切原始文件内容——NFD（macOS/越南语导入）或 CRLF 源文会错位。
+
+**planning_cursor**：
+project.json 顶层字段，下一批分集规划在源文中的起点（`{source_file, offset}`，null = 无规划进度），由规划工具在每次提交时前移。`source/_remaining.txt` 余文文件已废除：迁移回填仍读取其内容换算游标，规划工具首次提交时将其清理。
+_Avoid_: 把 `_remaining.txt` 当进度真相源（损坏即不可恢复正是账本要消除的旧模式）；把非空 cursor 当绝对最新——重跑回填只补新集范围、不前移非空值，规划起点以账本锚定范围末尾与 cursor 的较后者为准。
+
+**分集规划（plan / replan）**：
+服务端分集规划能力（`lib/episode_planner.EpisodePlanner` + SDK 工具 `plan_episodes` / `replan_episodes`）：从 planning_cursor 起读一个源文窗口，调项目配置的文本模型一次规划窗口内所有剧情弧完整的集（标题/钩子/范围；drama 含分集大纲），schema 强约束 + 锚点存在/唯一/连续机械校验失败自动重试，同一把项目锁内写账本、派生集文件并清理残留。replan 按用户自由文本意见从 from_episode 起局部重排：范围跨多个源文件时按文件拆为多段独立重切（单集不跨文件，文件边界即集边界，集号跨段连续编号）；波及已消费集需显式确认（标 stale），全局性意见（每集体量）回写项目设置（见 `docs/adr/0032`）。
+_Avoid_: 让主 agent 自行读原文选切分点（peek/split 脚本是被替代的旧模式）；窗口字数/每批集数硬编码到指令——它们是工具内部默认，`planning_window_chars` / `planning_max_episodes` 项目设置可覆盖。
 
 ### 智能体运行时
 
@@ -199,7 +227,7 @@ _Avoid_: 与 ManagedSession（会话内存状态容器）混为一谈——actor
 _Avoid_: 用「.claude」「CLAUDE.md」笼统指代——开发态 `.claude/` 与 agent profile 是两套；也不要称为 agent config（与 Anthropic 凭证的 agent_config 路由重名）。
 
 **profile 物化（materialization）**：
-把 agent profile 按 manifest + sha256 复制进每个项目目录的过程，只同步声明过且校验通过的文件，并按项目 content_mode 选 `CLAUDE.{narration,drama}.md` 变体落盘为单一 `CLAUDE.md`。
+把 agent profile 按 manifest + sha256 复制进每个项目目录的过程，只同步声明过且校验通过的文件，并按项目 content_mode 选 `CLAUDE.{narration,drama,ad}.md` 变体落盘为单一 `CLAUDE.md`。
 _Avoid_: 用「同步 / 复制 / deploy」泛指——物化特指 manifest 驱动 + 变体投影 + sha256 三态的受控写入；变体源文件名（`CLAUDE.narration.md`）≠ 项目端逻辑文件名（`CLAUDE.md`）。
 
 **agent 沙箱（agent sandbox）**：

@@ -45,17 +45,24 @@ description: 将小说转换为短视频的端到端工作流编排器。当用�
 进入工作流后，使用 Read 读取 `project.json`，使用 Glob 检查文件系统。按顺序检查，遇到第一个缺失项即确定当前阶段：
 
 1. characters / scenes / props 中**任一**为空（定义缺失）？ → **阶段 1**
-2. 目标集 source/episode_{N}.txt 不存在？ → **阶段 2**
-3. 目标集 drafts/ 中间文件不存在？ → **阶段 3**
-   - generation_mode ∈ {storyboard, grid}: `drafts/episode_{N}/step1_segments.md`
-   - generation_mode == reference_video: `drafts/episode_{N}/step1_reference_units.md`
-4. scripts/episode_{N}.json 不存在？ → **阶段 4**
+2. 目标集在账本（project.json `episodes[]`）中没有条目？ → **阶段 2**。分集接续状态**只读账本**：条目的 `ledger_status` 标记每集状态（planned 已规划 / consumed 已消费 / stale 重排后失效需重做 / unanchored 失锚锁定），顶层 `planning_cursor` 标记下一批规划起点；**不要用 Glob 文件名推断集数**（`source/episode_{N}.txt` 只是账本的派生物）
+3. 目标集 `ledger_status` 为 `stale`（重排后失效——旧 step1/剧本/媒体一律视为失效，即使文件还在也从本阶段起重做，产物沿版本机制替换），或目标集**当前组合对应的** step1 中间文件不存在？ → **阶段 3**。按 `effective_mode(project, episode)` × `content_mode` 三分支检查对应文件（注意 effective_mode 含集级 `episodes[i].generation_mode` 覆盖，不能只看项目顶层字段）：
+   - effective_mode == reference_video（任一 content_mode）: `drafts/episode_{N}/step1_reference_units.md`
+   - effective_mode ∈ {storyboard, grid} 且 content_mode == narration: `drafts/episode_{N}/step1_segments.md`
+   - effective_mode ∈ {storyboard, grid} 且 content_mode == drama: `drafts/episode_{N}/step1_normalized_script.md`
+
+   本项目 content_mode 固定为 narration（创建后不可变），故只会命中第 1 或第 2 分支，取决于该集的 effective_mode。只认当前组合对应的那一个文件：目录中出现**其他模式的 `step1_*` 文件**属残留，不作为阶段 3 已完成的依据。
+4. scripts/episode_{N}.json 不存在？ → **阶段 4**（另见阶段 4 触发条件：本次会话中阶段 3 中间文件被修改/重拆时，即使 JSON 存在也须重生）
 5. 任一类资产仍有缺 sheet 项（character 缺 character_sheet / scene 缺 scene_sheet / prop 缺 prop_sheet）？ → **阶段 5**（三类并行）
 6. **storyboard / grid 模式**：有场景缺少分镜图？ → **阶段 6**（reference_video 模式跳过）
 7. 有场景/unit 缺少视频？ → **阶段 7**
-8. 全部完成 → 工作流结束，引导用户在 Web 端导出剪映草稿
+8. **storyboard / grid 模式**：有段缺 `narration_audio`？ → **阶段 8（旁白配音）**（reference_video 模式无 segments，跳过）
+9. 全部完成 → 工作流结束，引导用户在 Web 端导出剪映草稿
 
-**确定目标集数**：如果用户未指定，找到最新的未完成集，或询问用户。
+> 阶段 8 只依赖剧本各段的 `novel_text`，独立于分镜图/视频——阶段 4 剧本生成后即可推进。
+> 用户提前要求配音时直接进入阶段 8，不必等分镜/视频完成。
+
+**确定目标集数**：如果用户未指定，读账本确定——`ledger_status` 为 `planned`（或 `stale`）的最小集号即下一个待制作集；账本中所有集均已消费且源文尚未规划完时，进入阶段 2 规划下一批。
 
 ---
 
@@ -78,7 +85,7 @@ description: 将小说转换为短视频的端到端工作流编排器。当用�
 
 **dispatch `analyze-assets` subagent**：
 
-```
+```text
 项目名称：{project_name}
 分析范围：{整部小说 / 用户指定的范围}
 已有角色：{已有角色名列表，或"无"}
@@ -92,30 +99,18 @@ description: 将小说转换为短视频的端到端工作流编排器。当用�
 
 ## 阶段 2：分集规划
 
-**触发**：目标集的 `source/episode_{N}.txt` 不存在
+**触发**：目标集在账本（project.json `episodes[]`）中没有条目
 
-每次只切分当前需要制作的那一集。**主 agent 直接执行**（不 dispatch subagent）：
+分集规划由服务端工具完成：工具内部从 `planning_cursor` 起读一个源文窗口，调用项目配置的文本模型一次规划出窗口内所有剧情弧完整的集（标题/钩子/原文范围），在同一把项目锁内写账本、派生 `source/episode_{N}.txt` 并清理残留派生文件。**主 agent 只调一次工具、只收摘要**——不读小说原文、不自行选切分点：
 
-1. 确定源文件：`source/_remaining.txt` 存在则使用，否则用原始小说文件，并确认 `project.json` 中 `source_language` 与源文实际语言一致（缺失/不符时 peek 会按 zh 度量，对 en/vi 源直接 count=0 失败；按需走 `mcp__arcreel__patch_project({"settings": {"source_language": "en"|"vi"|"zh"}})` 写入或给 peek 显式传 `--language`）
-2. 解析目标字数（按 `source_language` 解读为阅读单位）：
-   - 读 `project.json`，若已有 `episode_target_units` 字段 → 作为默认 target，向用户确认或调整
-   - 字段缺失 + 用户当前对话已明确指定字数 → 使用对话值
-   - 字段缺失 + 用户未指定 → AskUserQuestion 询问目标字数（选项形式与文案由 agent 按 `source_language` 实时判断）
-   - 用户给出非临时性偏好时 → 调 `mcp__arcreel__patch_project({"settings": {"episode_target_units": N}})` 写回 project.json
-3. 调用 `peek_split_point.py` 展示切分点附近上下文（peek 内部按 `source_language` 解读 --target）：
-
-   ```bash
-   python .claude/skills/manage-project/scripts/peek_split_point.py --source {源文件} --target {目标阅读单位}
-   ```
-
-4. 分析 nearby_breakpoints，建议自然断点
-5. 用户确认后，先 dry run 验证（**注意**：split 的 --target 是字符级口径，必须用 peek 输出的 `split_target_chars`，不能直接复用阅读单位 target，否则混排/ASCII 占比高时锚点搜索可能错位甚至落空）：
-
-   ```bash
-   python .claude/skills/manage-project/scripts/split_episode.py --source {源文件} --episode {N} --target {peek 输出的 split_target_chars} --anchor "{锚点文本}" --dry-run
-   ```
-
-6. 确认无误后实际执行（去掉 `--dry-run`）
+1. 规划前快速核对 `project.json`：
+   - `source_language` 是否与源文实际语言一致。优先级：**用户显式配置 > 自动推断**（正常路径由 overview 生成自动落盘）；发现不一致时**提醒用户（WARN）、说明后果并建议修正**（错误配置会使规划的体量度量与语言前提失真），用户未修正时按显式配置继续，不阻塞流程。字段缺失或经用户确认有误时，走 `mcp__arcreel__patch_project({"settings": {"source_language": "en"|"vi"|"zh"}})` 写入
+   - `episode_target_units`（每集目标体量，按 `source_language` 解读为阅读单位）：已设置则直接沿用；缺失且用户在对话中明确给过字数 → 经 `mcp__arcreel__patch_project({"settings": {"episode_target_units": N}})` 写入；都没有也可直接规划（工具会按短视频节奏自行把握体量），无需强制询问
+2. 调用 `mcp__arcreel__plan_episodes({})`。窗口字数与每批集数上限为工具内部默认，项目设置 `planning_window_chars` / `planning_max_episodes` 可覆盖（经 patch_project settings 写入）
+3. **批级审阅**：把工具返回的账本摘要（每集标题+钩子+体量）展示给用户，征求意见
+4. 用户提出意见（一句话可同时包含任意多处意见，含全局偏好）→ 调用 `mcp__arcreel__replan_episodes({"from_episode": N, "instructions": "用户意见原文"})`，`from_episode` 取意见中最早受影响的集；重排结果再次展示审阅。全局性意见（如每集体量）由工具自动回写项目设置，后续批次自动继承
+5. **已消费集警告确认**：重排会波及已消费集（已有 step1/剧本/媒体产物）时，工具会返回受影响集清单而不执行——把影响范围告知用户、获得明确确认后，追加 `"confirm_consumed": true` 重新调用；这些集会标 stale（产物不删除，重做沿现有覆盖/版本机制替换）
+6. 用户对本批规划满意后进入阶段 3。**用户显式授权全自主时**（如"直接跑完整个流程不用逐步确认"），可跳过批级审阅直接继续
 
 ---
 
@@ -125,8 +120,8 @@ description: 将小说转换为短视频的端到端工作流编排器。当用�
 
 根据 `effective_mode(project, episode)` 选择 subagent：
 
-- `generation_mode == reference_video` → dispatch `split-reference-video-units`
-- 否则 → dispatch `split-narration-segments`
+- `effective_mode == reference_video` → dispatch `split-reference-video-units`（产出 `drafts/episode_{N}/step1_reference_units.md`）
+- 否则（本项目 content_mode == narration）→ dispatch `split-narration-segments`（产出 `drafts/episode_{N}/step1_segments.md`）
 
 dispatch prompt 通用参数：项目名称、项目路径、集数、本集小说文件路径。
 
@@ -135,11 +130,15 @@ dispatch prompt 通用参数：项目名称、项目路径、集数、本集小�
 拿到模型能力与用户偏好；主 agent 不需要预先注入角色/场景/道具列表或
 `supported_durations` / `max_duration` / `max_reference_images` / `default_duration` 等数据。）
 
+**中间文件变更必重生剧本 JSON**：阶段 3 的中间文件被修改或重拆后（无论哪种生成模式、无论首次还是重做），即使 `scripts/episode_{N}.json` 已存在，也必须重新执行阶段 4——剧本 JSON 不会自动跟随中间文件更新，跳过会留下「新中间文件 + 旧 JSON」的陈旧组合。
+
 ---
 
 ## 阶段 4：JSON 剧本生成
 
-**触发**：scripts/episode_{N}.json 不存在
+**触发**（满足其一）：
+- `scripts/episode_{N}.json` 不存在
+- 阶段 3 的中间文件在本次会话中被修改或重拆（此时即使 JSON 已存在也必须重生）
 
 **dispatch `create-episode-script` subagent**：传入项目名称、项目路径、集数。
 
@@ -156,7 +155,7 @@ dispatch prompt 通用参数：项目名称、项目路径、集数、本集小�
 
 **调度规则（显式条件判断，按类型独立决定）**：
 
-```
+```text
 对于 type ∈ {character, scene, prop}:
   若该类存在缺 *_sheet 项 → dispatch 对应的 `generate-assets` subagent
   若该类均已齐全         → 跳过，不 dispatch
@@ -171,7 +170,7 @@ dispatch prompt 通用参数：项目名称、项目路径、集数、本集小�
 
 **触发**：有角色缺少 character_sheet
 
-```
+```text
 dispatch `generate-assets` subagent：
   任务类型：character
   项目名称：{project_name}
@@ -185,7 +184,7 @@ dispatch `generate-assets` subagent：
 
 **触发**：有场景缺少 scene_sheet
 
-```
+```text
 dispatch `generate-assets` subagent：
   任务类型：scene
   项目名称：{project_name}
@@ -199,7 +198,7 @@ dispatch `generate-assets` subagent：
 
 **触发**：有道具缺少 prop_sheet
 
-```
+```text
 dispatch `generate-assets` subagent：
   任务类型：prop
   项目名称：{project_name}
@@ -225,7 +224,7 @@ dispatch `generate-assets` subagent：
 
 **dispatch `generate-assets` subagent**：
 
-```
+```text
 dispatch `generate-assets` subagent：
   任务类型：storyboard
   项目名称：{project_name}
@@ -238,7 +237,7 @@ dispatch `generate-assets` subagent：
 
 **dispatch `generate-assets` subagent**：
 
-```
+```text
 dispatch `generate-assets` subagent：
   任务类型：storyboard
   项目名称：{project_name}
@@ -255,7 +254,7 @@ dispatch `generate-assets` subagent：
 
 **dispatch `generate-assets` subagent**：
 
-```
+```text
 dispatch `generate-assets` subagent：
   任务类型：video
   项目名称：{project_name}
@@ -263,6 +262,28 @@ dispatch `generate-assets` subagent：
     mcp__arcreel__generate_video_episode({"script": "episode_{N}.json"})
   验证方式：重新读取 scripts/episode_{N}.json，检查各场景的 video_clip 字段
 ```
+
+---
+
+## 阶段 8：旁白配音（仅 storyboard / grid 模式）
+
+**触发**：有段缺 `narration_audio`；**参考生视频模式跳过此阶段**（无 segments）
+
+旁白配音以各段 `novel_text` 原文逐段合成语音，只依赖剧本、独立于分镜图/视频：
+按序推进时排在视频之后，但用户要求时可在阶段 4 剧本生成后随时执行。
+
+**dispatch `generate-assets` subagent**：
+
+```text
+dispatch `generate-assets` subagent：
+  任务类型：narration_audio
+  项目名称：{project_name}
+  工具调用：
+    mcp__arcreel__generate_narration_audio({"script": "episode_{N}.json"})
+  验证方式：重新读取 scripts/episode_{N}.json，检查各段 generated_assets.narration_audio 字段
+```
+
+中断后重新 dispatch 同一工具调用即可断点续传——已有音频的段自动跳过，只补缺失段。
 
 ---
 

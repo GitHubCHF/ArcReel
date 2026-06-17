@@ -290,6 +290,52 @@ class TestStatusCalculator:
         assert ep2["script_status"] == "none"
         assert ep2["status"] == "draft"
 
+    def test_stale_ledger_episode_regresses_to_pending_preprocess(self, tmp_path):
+        """账本标 stale 的集：读时状态回退为待预处理（script_status=none），已有产物不删除。
+
+        重排使该集原文范围失效，剧本/媒体虽存在但已过期；读时回退驱动前端
+        与 agent 走重做流程，旧产物沿覆盖/版本机制保留可回滚。
+        """
+        project_root = tmp_path / "projects"
+        (project_root / "demo" / "drafts" / "episode_1").mkdir(parents=True)
+        (project_root / "demo" / "drafts" / "episode_1" / "step1_segments.md").write_text("ok", encoding="utf-8")
+        project = {
+            "overview": {"synopsis": "test"},
+            "characters": {},
+            "scenes": {},
+            "props": {},
+            "episodes": [
+                {"episode": 1, "script_file": "scripts/episode_1.json", "ledger_status": "stale"},
+                {"episode": 2, "script_file": "scripts/episode_2.json", "ledger_status": "consumed"},
+            ],
+        }
+        scripts = {
+            "episode_1.json": {
+                "content_mode": "narration",
+                "segments": [
+                    {"duration_seconds": 4, "generated_assets": {"storyboard_image": "a.png", "video_clip": "b.mp4"}}
+                ],
+            },
+            "episode_2.json": {"content_mode": "narration", "segments": [{"duration_seconds": 4}]},
+        }
+        calc = StatusCalculator(_FakePM(project_root, project, scripts))
+
+        enriched = calc.enrich_project("demo", project)
+
+        ep1 = enriched["episodes"][0]
+        # stale 集即使剧本与分段草稿都在，也回退为待预处理
+        assert ep1["script_status"] == "none"
+        assert ep1["status"] == "draft"
+        assert ep1["videos"] == {"total": 0, "completed": 0}
+        # 不删除任何产物：条目仍保留剧本引用与账本状态
+        assert ep1["script_file"] == "scripts/episode_1.json"
+        assert ep1["ledger_status"] == "stale"
+        # 非 stale 集不受影响
+        ep2 = enriched["episodes"][1]
+        assert ep2["script_status"] == "generated"
+        # 项目级汇总同步回退：仅 1 集计为已生成剧本
+        assert enriched["status"]["episodes_summary"]["scripted"] == 1
+
     def test_enrich_script(self, tmp_path):
         script = {
             "content_mode": "narration",
@@ -412,3 +458,84 @@ class TestStatusCalculator:
         assert pm.load_calls == ["scripts/episode_2.json"]
         assert status["episodes_summary"]["total"] == 2
         assert status["episodes_summary"]["scripted"] == 2
+
+
+class TestAdStatusCalculation:
+    """广告/短片模式（平铺 shots[]）的状态与统计计算。"""
+
+    def test_select_ad_mode_and_items(self):
+        mode, items = StatusCalculator._select_content_mode_and_items(
+            {"content_mode": "ad", "shots": [{"shot_id": "E1S01"}]}
+        )
+        assert mode == "ad"
+        assert len(items) == 1
+
+    def test_select_ad_by_duck_typing_when_content_mode_absent(self):
+        mode, items = StatusCalculator._select_content_mode_and_items({"shots": [{"shot_id": "E1S01"}]})
+        assert mode == "ad"
+        assert len(items) == 1
+
+    def test_calculate_episode_stats_for_ad(self, tmp_path):
+        calc = StatusCalculator(_FakePM(tmp_path, {}, {}))
+
+        stats = calc.calculate_episode_stats(
+            "demo",
+            {
+                "content_mode": "ad",
+                "shots": [
+                    {"duration_seconds": 3, "generated_assets": {"storyboard_image": "a.png"}},
+                    {"duration_seconds": 5},
+                ],
+            },
+        )
+        assert stats["status"] == "in_production"
+        assert stats["scenes_count"] == 2
+        assert stats["duration_seconds"] == 8
+        assert stats["storyboards"] == {"total": 2, "completed": 1}
+        assert stats["videos"] == {"total": 2, "completed": 0}
+
+    def test_ad_missing_duration_counts_zero(self, tmp_path):
+        # ad 无单镜头默认时长偏好：缺 duration_seconds 的镜头按 0 计入，
+        # 不挪用 narration(4)/drama(8) 的默认值污染 target_duration 对照
+        calc = StatusCalculator(_FakePM(tmp_path, {}, {}))
+        stats = calc.calculate_episode_stats(
+            "demo",
+            {"content_mode": "ad", "shots": [{"duration_seconds": 3}, {}]},
+        )
+        assert stats["duration_seconds"] == 3
+
+    def test_enrich_script_aggregates_ad_references(self, tmp_path):
+        calc = StatusCalculator(_FakePM(tmp_path, {}, {}))
+        script = {
+            "content_mode": "ad",
+            "shots": [
+                {
+                    "shot_id": "E1S01",
+                    "duration_seconds": 3,
+                    "characters_in_shot": ["主播"],
+                    "scenes": ["客厅"],
+                    "props": ["速干杯"],
+                },
+                {
+                    "shot_id": "E1S02",
+                    "duration_seconds": 5,
+                    "characters_in_shot": [],
+                    "scenes": ["客厅"],
+                    "props": [],
+                },
+            ],
+        }
+        enriched = calc.enrich_script(script)
+        assert enriched["metadata"]["total_scenes"] == 2
+        assert enriched["duration_seconds"] == 8
+        assert enriched["characters_in_episode"] == ["主播"]
+        assert enriched["scenes_in_episode"] == ["客厅"]
+        assert enriched["props_in_episode"] == ["速干杯"]
+
+    def test_duck_typing_precedence_segments_over_scenes_over_shots(self):
+        """缺 content_mode 的老脚本同时残留多种键时，鸭子类型优先级固定为
+        segments > scenes > shots（依赖 SCRIPT_SHAPES 注册顺序，本测试钉住该顺序）。"""
+        mode, _ = StatusCalculator._select_content_mode_and_items({"segments": [{}], "scenes": [{}], "shots": [{}]})
+        assert mode == "narration"
+        mode, _ = StatusCalculator._select_content_mode_and_items({"scenes": [{}], "shots": [{}]})
+        assert mode == "drama"

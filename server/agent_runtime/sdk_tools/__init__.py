@@ -22,12 +22,17 @@ from server.agent_runtime.sdk_tools.enqueue_assets import (
     list_pending_assets_tool,
 )
 from server.agent_runtime.sdk_tools.enqueue_grid import generate_grid_tool
+from server.agent_runtime.sdk_tools.enqueue_narration_audio import generate_narration_audio_tool
 from server.agent_runtime.sdk_tools.enqueue_storyboards import generate_storyboards_tool
 from server.agent_runtime.sdk_tools.enqueue_videos import (
     generate_video_all_tool,
     generate_video_episode_tool,
     generate_video_scene_tool,
     generate_video_selected_tool,
+)
+from server.agent_runtime.sdk_tools.episode_planning import (
+    plan_episodes_tool,
+    replan_episodes_tool,
 )
 from server.agent_runtime.sdk_tools.patch_episode_meta import patch_episode_meta_tool
 from server.agent_runtime.sdk_tools.patch_project import patch_project_tool
@@ -61,9 +66,12 @@ ARCREEL_MCP_TOOL_IDS: tuple[str, ...] = (
     "generate_video_scene",
     "generate_video_all",
     "generate_video_selected",
+    "generate_narration_audio",
     "generate_episode_script",
     "normalize_drama_script",
     "get_video_capabilities",
+    "plan_episodes",
+    "replan_episodes",
     "patch_episode_script",
     "patch_episode_meta",
     "insert_segment",
@@ -88,9 +96,12 @@ def build_arcreel_mcp_server(*, project_name: str, projects_root: Path) -> Any:
             generate_video_scene_tool(ctx),
             generate_video_all_tool(ctx),
             generate_video_selected_tool(ctx),
+            generate_narration_audio_tool(ctx),
             generate_episode_script_tool(ctx),
             normalize_drama_script_tool(ctx),
             get_video_capabilities_tool(ctx),
+            plan_episodes_tool(ctx),
+            replan_episodes_tool(ctx),
             patch_episode_script_tool(ctx),
             patch_episode_meta_tool(ctx),
             insert_segment_tool(ctx),

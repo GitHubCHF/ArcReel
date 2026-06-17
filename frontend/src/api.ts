@@ -197,10 +197,14 @@ export interface SegmentUpdatePayload {
 export interface CreateProjectPayload {
   title: string;
   name?: string;
-  content_mode?: "narration" | "drama";
+  content_mode?: "narration" | "drama" | "ad";
   aspect_ratio?: "9:16" | "16:9";
   generation_mode?: GenerationMode;
   default_duration?: number | null;
+  /** 仅 ad：目标总时长（秒），UI 四档 15/30/60/90。 */
+  target_duration?: number;
+  /** 仅 ad：创作诉求短文本（可空）。 */
+  brief?: string | null;
   style_template_id?: string | null;
   video_backend?: string | null;
   image_backend?: string | null;
@@ -662,6 +666,49 @@ class API {
     );
   }
 
+  // ==================== 项目产品管理 ====================
+
+  static async addProjectProduct(
+    projectName: string,
+    name: string,
+    description: string,
+    brand?: string
+  ): Promise<SuccessResponse> {
+    return this.request(
+      `/projects/${encodeURIComponent(projectName)}/products`,
+      {
+        method: "POST",
+        body: JSON.stringify(brand ? { name, description, brand } : { name, description }),
+      }
+    );
+  }
+
+  static async updateProjectProduct(
+    projectName: string,
+    productName: string,
+    updates: Record<string, unknown>
+  ): Promise<SuccessResponse> {
+    return this.request(
+      `/projects/${encodeURIComponent(projectName)}/products/${encodeURIComponent(productName)}`,
+      {
+        method: "PATCH",
+        body: JSON.stringify(updates),
+      }
+    );
+  }
+
+  static async deleteProjectProduct(
+    projectName: string,
+    productName: string
+  ): Promise<SuccessResponse> {
+    return this.request(
+      `/projects/${encodeURIComponent(projectName)}/products/${encodeURIComponent(productName)}`,
+      {
+        method: "DELETE",
+      }
+    );
+  }
+
   // ==================== 场景管理 ====================
 
   static async getScript(
@@ -1060,6 +1107,44 @@ class API {
   }
 
   /**
+   * 生成单段旁白配音（文本由后端从剧本 novel_text 读取）
+   * @param projectName - 项目名称
+   * @param segmentId - 片段 ID
+   * @param scriptFile - 剧本文件名
+   */
+  static async generateNarrationAudio(
+    projectName: string,
+    segmentId: string,
+    scriptFile: string
+  ): Promise<{ success: boolean; task_id: string; message: string }> {
+    return this.request(
+      `/projects/${encodeURIComponent(projectName)}/generate/tts/${encodeURIComponent(segmentId)}`,
+      {
+        method: "POST",
+        body: JSON.stringify({ script_file: scriptFile }),
+      }
+    );
+  }
+
+  /**
+   * 批量生成全集旁白配音（只入队缺少旁白且有原文的段）
+   * @param projectName - 项目名称
+   * @param scriptFile - 剧本文件名
+   */
+  static async generateEpisodeNarrationAudio(
+    projectName: string,
+    scriptFile: string
+  ): Promise<{ success: boolean; task_ids: string[]; message: string }> {
+    return this.request(
+      `/projects/${encodeURIComponent(projectName)}/generate/tts`,
+      {
+        method: "POST",
+        body: JSON.stringify({ script_file: scriptFile }),
+      }
+    );
+  }
+
+  /**
    * 生成角色设计图
    * @param projectName - 项目名称
    * @param charName - 角色名称
@@ -1124,6 +1209,30 @@ class API {
   }> {
     return this.request(
       `/projects/${encodeURIComponent(projectName)}/generate/prop/${encodeURIComponent(propName)}`,
+      {
+        method: "POST",
+        body: JSON.stringify({ prompt }),
+      }
+    );
+  }
+
+  /**
+   * 生成产品标准参考图（product sheet）
+   * @param projectName - 项目名称
+   * @param productName - 产品名称
+   * @param prompt - 产品描述 prompt
+   */
+  static async generateProjectProduct(
+    projectName: string,
+    productName: string,
+    prompt: string
+  ): Promise<{
+    success: boolean;
+    task_id: string;
+    message: string;
+  }> {
+    return this.request(
+      `/projects/${encodeURIComponent(projectName)}/generate/product/${encodeURIComponent(productName)}`,
       {
         method: "POST",
         body: JSON.stringify({ prompt }),

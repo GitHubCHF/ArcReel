@@ -2,6 +2,8 @@ import pytest
 from pydantic import ValidationError
 
 from lib.script_models import (
+    AdEpisodeScript,
+    AdShot,
     Composition,
     Dialogue,
     DramaEpisodeScript,
@@ -11,6 +13,17 @@ from lib.script_models import (
     NarrationSegment,
     VideoPrompt,
 )
+
+
+def _image_prompt() -> ImagePrompt:
+    return ImagePrompt(
+        scene="场景",
+        composition=Composition(shot_type="Medium Shot", lighting="暖光", ambiance="薄雾"),
+    )
+
+
+def _video_prompt() -> VideoPrompt:
+    return VideoPrompt(action="转身", camera_motion="Static", ambiance_audio="风声")
 
 
 class TestScriptModels:
@@ -150,6 +163,72 @@ class TestScriptModels:
         assert drama.scenes[0].duration_seconds == 8
 
 
+class TestAdScriptModels:
+    """广告/短片模式剧本骨架：平铺 shots[]，口播文案一等。"""
+
+    def test_ad_shot_carries_section_and_voiceover(self):
+        shot = AdShot(
+            shot_id="E1S01",
+            section="hook",
+            duration_seconds=3,
+            voiceover_text="三秒钟告诉你为什么离不开它",
+            image_prompt=_image_prompt(),
+            video_prompt=_video_prompt(),
+        )
+        assert shot.section == "hook"
+        assert shot.voiceover_text == "三秒钟告诉你为什么离不开它"
+        assert shot.products_in_shot == []
+        assert shot.characters_in_shot == []
+        assert shot.scenes == []
+        assert shot.props == []
+        assert shot.transition_to_next == "cut"
+        assert shot.generated_assets.status == "pending"
+
+    def test_ad_shot_requires_voiceover_text_field(self):
+        with pytest.raises(ValidationError):
+            AdShot.model_validate(
+                {
+                    "shot_id": "E1S01",
+                    "section": "hook",
+                    "duration_seconds": 3,
+                    "image_prompt": _image_prompt(),
+                    "video_prompt": _video_prompt(),
+                }
+            )
+
+    def test_ad_episode_script_builds_with_shots(self):
+        script = AdEpisodeScript(
+            title="新品速干杯",
+            shots=[
+                AdShot(
+                    shot_id="E1S01",
+                    section="hook",
+                    duration_seconds=3,
+                    voiceover_text="开场口播",
+                    products_in_shot=["速干杯"],
+                    image_prompt=_image_prompt(),
+                    video_prompt=_video_prompt(),
+                )
+            ],
+        )
+        assert script.content_mode == "ad"
+        assert script.shots[0].products_in_shot == ["速干杯"]
+
+    def test_ad_shot_rejects_unknown_fields(self):
+        with pytest.raises(ValidationError):
+            AdShot.model_validate(
+                {
+                    "shot_id": "E1S01",
+                    "section": "hook",
+                    "duration_seconds": 3,
+                    "voiceover_text": "口播",
+                    "image_prompt": _image_prompt(),
+                    "video_prompt": _video_prompt(),
+                    "hallucinated_field": "x",
+                }
+            )
+
+
 class TestLLMSchemaExclusion:
     """LLM 看到的 JSON schema 必须排除 note / generated_assets / duration_override / 顶层 duration_seconds。"""
 
@@ -236,6 +315,30 @@ class TestLLMSchemaExclusion:
             assert "content_mode" not in top_props, f"{model.__name__} 顶层不应有 content_mode"
             assert "scene_type" not in keys, f"{model.__name__} 不应有 scene_type"
             assert "transition_to_next" not in keys, f"{model.__name__} 不应有 transition_to_next"
+
+    def test_schema_excludes_hook_and_teaser_including_derived_models(self):
+        """hook / next_episode_teaser 由分集账本注入，LLM 不该看到——
+        含 build_*_script_model 动态约束子类（response_schema 实际取自它们）。"""
+        from lib.script_models import (
+            DramaEpisodeScript,
+            NarrationEpisodeScript,
+            ReferenceVideoScript,
+            build_episode_script_model,
+            build_reference_video_script_model,
+        )
+
+        models = (
+            NarrationEpisodeScript,
+            DramaEpisodeScript,
+            ReferenceVideoScript,
+            build_episode_script_model("narration", [4, 6, 8]),
+            build_episode_script_model("drama", [4, 6, 8]),
+            build_reference_video_script_model([4, 8]),
+        )
+        for model in models:
+            top_props = set(model.model_json_schema()["properties"].keys())
+            assert "hook" not in top_props, f"{model.__name__} 顶层不应有 hook"
+            assert "next_episode_teaser" not in top_props, f"{model.__name__} 顶层不应有 next_episode_teaser"
 
 
 class TestRuntimeBackwardCompat:

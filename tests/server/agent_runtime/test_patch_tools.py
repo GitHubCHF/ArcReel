@@ -426,6 +426,61 @@ class TestPatchProject:
         # 用户上传的 reference_image 不被 agent 覆写
         assert char["reference_image"] == "characters/refs/li_bai.jpg"
 
+    async def test_product_upsert_selling_points_editable(self, ctx: ToolContext) -> None:
+        """products 表对 agent 开放；selling_points 在可编辑白名单内（agent 起草、用户可改），
+        新 entry 的列表字段按 spec 初始化。"""
+        out = await _call(
+            patch_project_tool(ctx),
+            {
+                "table": "products",
+                "entries": {"保温杯": {"description": "不锈钢保温杯", "selling_points": ["12 小时保温", "一键开盖"]}},
+            },
+        )
+        assert out.get("is_error") is not True
+        product = ctx.pm.load_project("demo")["products"]["保温杯"]
+        assert product["description"] == "不锈钢保温杯"
+        assert product["selling_points"] == ["12 小时保温", "一键开盖"]
+        assert product["reference_images"] == []
+        assert product["product_sheet"] == ""
+        assert product["brand"] == ""
+
+    async def test_product_upsert_strips_reference_images(self, ctx: ToolContext) -> None:
+        """reference_images 是用户上传的原图路径列表（保真验收锚点），不在 agent 白名单——
+        upsert 应静默丢弃且不覆写既有值，更新走专用上传 API。"""
+        await _call(
+            patch_project_tool(ctx),
+            {"table": "products", "entries": {"保温杯": {"description": "不锈钢保温杯"}}},
+        )
+        ctx.pm.add_product_reference_image("demo", "保温杯", "products/refs/保温杯_1.jpg")
+
+        out = await _call(
+            patch_project_tool(ctx),
+            {
+                "table": "products",
+                "entries": {
+                    "保温杯": {
+                        "description": "改后描述",
+                        "selling_points": ["双层真空"],
+                        "reference_images": [],
+                    }
+                },
+            },
+        )
+        assert out.get("is_error") is not True
+        product = ctx.pm.load_project("demo")["products"]["保温杯"]
+        assert product["description"] == "改后描述"
+        assert product["selling_points"] == ["双层真空"]
+        assert product["reference_images"] == ["products/refs/保温杯_1.jpg"]
+
+    async def test_product_upsert_invalid_selling_points_blocked(self, ctx: ToolContext) -> None:
+        """selling_points 须为字符串列表：非法类型被结构校验拦截，不落盘。"""
+        out = await _call(
+            patch_project_tool(ctx),
+            {"table": "products", "entries": {"保温杯": {"description": "杯", "selling_points": "不是列表"}}},
+        )
+        assert out.get("is_error") is True
+        assert "保温杯" not in ctx.pm.load_project("demo").get("products", {})
+
     async def test_response_distinguishes_added_and_merged(self, ctx: ToolContext) -> None:
         """工具返回文本应区分『新增 N 个 / 合并改字段 N 个』,让 agent 验证是否符合预期策略
         (如 analyze-assets subagent 应预期合并数=0,出现合并数说明遗漏了已存在过滤)。"""
@@ -564,6 +619,23 @@ class TestPatchProjectSettings:
         assert out.get("is_error") is True
         assert "episode_target_units" not in ctx.pm.load_project("demo")
 
+    @pytest.mark.parametrize("key", ["planning_window_chars", "planning_max_episodes"])
+    async def test_set_and_clear_planning_overrides(self, ctx: ToolContext, key: str) -> None:
+        """分集规划的窗口字数 / 每批集数覆盖项：正整数写入，null 清除回内部默认。"""
+        out = await _call(patch_project_tool(ctx), {"settings": {key: 12}})
+        assert out.get("is_error") is not True
+        assert ctx.pm.load_project("demo")[key] == 12
+        out = await _call(patch_project_tool(ctx), {"settings": {key: None}})
+        assert out.get("is_error") is not True
+        assert key not in ctx.pm.load_project("demo")
+
+    @pytest.mark.parametrize("key", ["planning_window_chars", "planning_max_episodes"])
+    @pytest.mark.parametrize("bad_value", ["10", 0, -1, 2.5, True])
+    async def test_invalid_planning_override_rejected(self, ctx: ToolContext, key: str, bad_value: Any) -> None:
+        out = await _call(patch_project_tool(ctx), {"settings": {key: bad_value}})
+        assert out.get("is_error") is True
+        assert key not in ctx.pm.load_project("demo")
+
     async def test_table_and_settings_together_rejected(self, ctx: ToolContext) -> None:
         out = await _call(
             patch_project_tool(ctx),
@@ -587,6 +659,90 @@ class TestPatchProjectSettings:
         )
         assert out.get("is_error") is not True
         assert ctx.pm.load_project("demo")["characters"]["李白"]["description"] == "白衣剑客"
+
+
+class TestPatchProjectNarrationSettings:
+    """narration_voice / narration_speed 经 settings 白名单写入/清除/校验（项目级旁白覆盖）。"""
+
+    async def test_set_narration_voice(self, ctx: ToolContext) -> None:
+        out = await _call(patch_project_tool(ctx), {"settings": {"narration_voice": "Ethan"}})
+        assert out.get("is_error") is not True
+        assert ctx.pm.load_project("demo")["narration_voice"] == "Ethan"
+        assert "已更新" in _text(out)
+
+    async def test_modify_narration_voice(self, ctx: ToolContext) -> None:
+        await _call(patch_project_tool(ctx), {"settings": {"narration_voice": "Ethan"}})
+        out = await _call(patch_project_tool(ctx), {"settings": {"narration_voice": "Cherry"}})
+        assert out.get("is_error") is not True
+        assert ctx.pm.load_project("demo")["narration_voice"] == "Cherry"
+
+    async def test_clear_narration_voice(self, ctx: ToolContext) -> None:
+        await _call(patch_project_tool(ctx), {"settings": {"narration_voice": "Ethan"}})
+        out = await _call(patch_project_tool(ctx), {"settings": {"narration_voice": None}})
+        assert out.get("is_error") is not True
+        assert "narration_voice" not in ctx.pm.load_project("demo")
+        assert "已清除" in _text(out)
+
+    @pytest.mark.parametrize("bad", ["", "   ", "\t\n", 1, 1.5, True, ["Ethan"], {"id": "Ethan"}])
+    async def test_invalid_narration_voice_rejected(self, ctx: ToolContext, bad: Any) -> None:
+        out = await _call(patch_project_tool(ctx), {"settings": {"narration_voice": bad}})
+        assert out.get("is_error") is True
+        assert "narration_voice" not in ctx.pm.load_project("demo")
+
+    @pytest.mark.parametrize("speed", [1.2, 0.5, 2, 1])
+    async def test_set_narration_speed(self, ctx: ToolContext, speed: Any) -> None:
+        out = await _call(patch_project_tool(ctx), {"settings": {"narration_speed": speed}})
+        assert out.get("is_error") is not True
+        assert ctx.pm.load_project("demo")["narration_speed"] == speed
+
+    async def test_clear_narration_speed(self, ctx: ToolContext) -> None:
+        await _call(patch_project_tool(ctx), {"settings": {"narration_speed": 1.2}})
+        out = await _call(patch_project_tool(ctx), {"settings": {"narration_speed": None}})
+        assert out.get("is_error") is not True
+        assert "narration_speed" not in ctx.pm.load_project("demo")
+        assert "已清除" in _text(out)
+
+    @pytest.mark.parametrize("bad", [0, -1.5, float("inf"), float("nan"), True, False, "1.2", "fast", [1.2], 10**400])
+    async def test_invalid_narration_speed_rejected(self, ctx: ToolContext, bad: Any) -> None:
+        out = await _call(patch_project_tool(ctx), {"settings": {"narration_speed": bad}})
+        assert out.get("is_error") is True
+        # 超出 float 范围的巨大整数同样收到清晰的校验文案，而非底层溢出信息
+        assert "narration_speed 必须是正的有限数值" in _text(out)
+        assert "narration_speed" not in ctx.pm.load_project("demo")
+
+    async def test_one_invalid_field_rejects_whole_batch(self, ctx: ToolContext) -> None:
+        out = await _call(
+            patch_project_tool(ctx),
+            {"settings": {"narration_voice": "Ethan", "narration_speed": -1}},
+        )
+        assert out.get("is_error") is True
+        project = ctx.pm.load_project("demo")
+        assert "narration_voice" not in project
+        assert "narration_speed" not in project
+
+    async def test_resolver_uses_values_written_by_tool(self, ctx: ToolContext) -> None:
+        """工具写入与生成端解析读的是同一份顶层字段:写入后 resolver 实际解析出覆盖值。"""
+        from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
+
+        from lib.config.resolver import ConfigResolver
+        from lib.db.base import Base
+
+        out = await _call(
+            patch_project_tool(ctx),
+            {"settings": {"narration_voice": "Ethan", "narration_speed": 1.2}},
+        )
+        assert out.get("is_error") is not True
+        project = ctx.pm.load_project("demo")
+
+        engine = create_async_engine("sqlite+aiosqlite:///:memory:")
+        async with engine.begin() as conn:
+            await conn.run_sync(Base.metadata.create_all)
+        try:
+            resolver = ConfigResolver(async_sessionmaker(engine, expire_on_commit=False))
+            assert await resolver.resolve_narration_voice(project) == "Ethan"
+            assert await resolver.resolve_narration_speed(project) == 1.2
+        finally:
+            await engine.dispose()
 
 
 class TestPatchProjectOverview:
@@ -652,3 +808,36 @@ class TestPatchProjectOverview:
             {"overview": {"synopsis": "x"}, "table": "characters", "entries": {"a": {"description": "b"}}},
         )
         assert out.get("is_error") is True
+
+
+class TestPatchProjectBriefSetting:
+    """brief 是 ad 项目的创作诉求短文本，经 settings 白名单写入/清除；非 ad 项目拒绝。"""
+
+    @pytest.fixture
+    def ad_ctx(self, tmp_path: Path) -> ToolContext:
+        pm = ProjectManager(str(tmp_path))
+        pm.create_project("ad-demo", content_mode="ad")
+        pm.create_project_metadata("ad-demo", "Ad Demo", "Realistic", "ad", target_duration=60)
+        return ToolContext(project_name="ad-demo", projects_root=tmp_path, pm=pm)
+
+    async def test_set_brief_on_ad_project(self, ad_ctx: ToolContext) -> None:
+        out = await _call(patch_project_tool(ad_ctx), {"settings": {"brief": "突出 3 秒速干卖点"}})
+        assert out.get("is_error") is not True
+        assert ad_ctx.pm.load_project("ad-demo")["brief"] == "突出 3 秒速干卖点"
+
+    async def test_clear_brief_on_ad_project(self, ad_ctx: ToolContext) -> None:
+        await _call(patch_project_tool(ad_ctx), {"settings": {"brief": "x"}})
+        out = await _call(patch_project_tool(ad_ctx), {"settings": {"brief": None}})
+        assert out.get("is_error") is not True
+        assert "brief" not in ad_ctx.pm.load_project("ad-demo")
+
+    async def test_brief_rejected_on_non_ad_project(self, ctx: ToolContext) -> None:
+        out = await _call(patch_project_tool(ctx), {"settings": {"brief": "x"}})
+        assert out.get("is_error") is True
+        assert "brief" not in ctx.pm.load_project("demo")
+
+    async def test_non_string_brief_rejected(self, ad_ctx: ToolContext) -> None:
+        out = await _call(patch_project_tool(ad_ctx), {"settings": {"brief": 42}})
+        assert out.get("is_error") is True
+        # 创建时写入的 brief=""（可空）不被非法写入污染
+        assert ad_ctx.pm.load_project("ad-demo")["brief"] == ""

@@ -1,7 +1,9 @@
+import { useEffect, useState } from "react";
 import { useTranslation } from "react-i18next";
 import { Film, Loader2, Sparkles, RotateCcw, AlertTriangle } from "lucide-react";
 import { API } from "@/api";
 import { useProjectsStore } from "@/stores/projects-store";
+import { ConfirmDialog } from "@/components/ui/ConfirmDialog";
 import { VersionTimeMachine } from "@/components/canvas/timeline/VersionTimeMachine";
 import { UPLOAD_VIDEO_ACCEPT, UploadIconButton } from "@/components/ui/UploadIconButton";
 import { formatCost } from "@/utils/cost-format";
@@ -52,6 +54,15 @@ export function UnitPreviewPanel({
   // 上传/还原后路径不变，靠 fingerprint cache-bust 让 <video> 重新拉取
   const clipFp = useProjectsStore((s) => (clip ? s.getAssetFingerprint(clip) : null));
 
+  // 乐观本地锁(防点击→任务入队空窗内连点) + 重新生成二次确认
+  const [submitting, setSubmitting] = useState(false);
+  const [confirmOpen, setConfirmOpen] = useState(false);
+  useEffect(() => {
+    if (!submitting) return;
+    const id = setTimeout(() => setSubmitting(false), 6000);
+    return () => clearTimeout(id);
+  }, [submitting]);
+
   if (!unit) {
     return (
       <div className="flex h-full items-center justify-center p-6 text-sm text-[var(--color-text-4)]">
@@ -75,6 +86,19 @@ export function UnitPreviewPanel({
     : failed
       ? t("reference_preview_retry")
       : t("reference_preview_generate");
+
+  const doGenerate = () => {
+    setSubmitting(true);
+    onGenerate?.(unit.unit_id);
+  };
+  const handleGenerateClick = () => {
+    // 已有成片时「重新生成」先二次确认,避免页面未同步时误重复生成、消耗额度
+    if (ready) {
+      setConfirmOpen(true);
+      return;
+    }
+    doGenerate();
+  };
 
   return (
     <div className="flex h-full min-h-0 flex-col gap-3 overflow-y-auto px-3.5 py-3.5">
@@ -183,15 +207,15 @@ export function UnitPreviewPanel({
       {onGenerate && (
         <button
           type="button"
-          onClick={() => onGenerate(unit.unit_id)}
-          disabled={inFlight}
+          onClick={handleGenerateClick}
+          disabled={inFlight || submitting}
           className={`focus-ring inline-flex items-center justify-center gap-2 rounded-lg px-3.5 py-2.5 text-sm font-semibold transition-colors ${
-            inFlight
+            inFlight || submitting
               ? "cursor-not-allowed border border-[var(--color-hairline)] bg-[oklch(0.22_0.011_265_/_0.6)] text-[var(--color-text-3)]"
               : "text-[oklch(0.14_0_0)] [background:linear-gradient(180deg,var(--color-accent-2),var(--color-accent))] shadow-[inset_0_1px_0_oklch(1_0_0_/_0.3),0_4px_14px_-4px_var(--color-accent-glow)]"
           }`}
         >
-          {inFlight ? (
+          {inFlight || submitting ? (
             <>
               <Loader2 className="h-3.5 w-3.5 animate-spin" aria-hidden="true" />
               <span>{t("reference_preview_generating")}</span>
@@ -250,6 +274,19 @@ export function UnitPreviewPanel({
           )}
         </dl>
       </div>
+
+      <ConfirmDialog
+        open={confirmOpen}
+        title={t("media_regenerate_confirm_title")}
+        description={t("media_regenerate_confirm_desc")}
+        confirmLabel={t("media_regenerate_confirm")}
+        tone="danger"
+        onConfirm={() => {
+          setConfirmOpen(false);
+          doGenerate();
+        }}
+        onCancel={() => setConfirmOpen(false)}
+      />
     </div>
   );
 }

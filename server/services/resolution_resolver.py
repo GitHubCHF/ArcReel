@@ -9,6 +9,7 @@ PROVIDER_FALLBACK_RESOLUTION: dict[str, str] = {
     "ark": "720p",
     "grok": "720p",
     "openai": "720p",
+    "tecdo": "720p",
 }
 
 

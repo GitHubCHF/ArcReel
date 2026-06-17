@@ -272,11 +272,11 @@ class TecDoVideoBackend:
         )
         resp.raise_for_status()
         body = resp.json()
-        if str(body.get("code")) != "0":
-            raise RuntimeError(f"钛动资产创建失败: code={body.get('code')} message={body.get('message')}")
+        # 不查 code:实测响应顶层无 code(或为 200,非文档示例的 0),与视频 create 一致;
+        # 成功与否以 data.assetId 是否存在为准。
         asset_id = (body.get("data") or {}).get("assetId")
         if not asset_id:
-            raise RuntimeError(f"钛动资产创建返回缺少 assetId: {body}")
+            raise RuntimeError(f"钛动资产创建失败或返回缺少 assetId: {body}")
         return asset_id
 
     async def _wait_asset_active(self, client: httpx.AsyncClient, asset_id: str) -> None:

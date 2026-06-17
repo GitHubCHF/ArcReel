@@ -74,7 +74,8 @@ def _query_resp(
 
 
 def _asset_create_resp(asset_id: str = "asset-1") -> MagicMock:
-    return _make_response(200, {"code": 0, "message": "success", "data": {"assetId": asset_id}})
+    # 实测顶层无 code 字段,成功以 data.assetId 为准。
+    return _make_response(200, {"data": {"assetId": asset_id}})
 
 
 def _asset_get_resp(status: str = "Active", asset_id: str = "asset-1") -> MagicMock:

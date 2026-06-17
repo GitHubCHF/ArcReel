@@ -57,12 +57,19 @@ def _submit_resp(task_id: str = "task-1") -> MagicMock:
     return _make_response(200, {"code": 200, "data": {"taskId": task_id}})
 
 
-def _query_resp(status: str, url: str | None = None, actual_amount: float | None = None) -> MagicMock:
+def _query_resp(
+    status: str,
+    url: str | None = None,
+    actual_amount: float | None = None,
+    currency: str | None = None,
+) -> MagicMock:
     data: dict = {"taskId": "task-1", "status": status, "error": ""}
     if url is not None:
         data["videoUrl"] = url
     if actual_amount is not None:
         data["actualAmount"] = actual_amount
+    if currency is not None:
+        data["currency"] = currency
     return _make_response(200, {"code": 200, "data": data})
 
 
@@ -147,7 +154,7 @@ class TestMeta:
 
 class TestContentDispatch:
     async def test_text_to_video_no_image(self, tmp_path: Path):
-        mock_client = _client(post_side=[_submit_resp()], get_side=[_query_resp("COMPLETED", "https://cdn/v.mp4")])
+        mock_client = _client(post_side=[_submit_resp()], get_side=[_query_resp("completed", "https://cdn/v.mp4")])
         fake_download = _fake_download()
 
         with (
@@ -174,7 +181,7 @@ class TestContentDispatch:
         assert result.video_path.read_bytes() == b"mp4-bytes"
 
     async def test_seed_forwarded_when_set(self, tmp_path: Path):
-        mock_client = _client(post_side=[_submit_resp()], get_side=[_query_resp("COMPLETED", "https://cdn/v.mp4")])
+        mock_client = _client(post_side=[_submit_resp()], get_side=[_query_resp("completed", "https://cdn/v.mp4")])
         with (
             patch("httpx.AsyncClient", return_value=mock_client),
             patch("lib.video_backends.tecdo._POLL_INTERVAL_SECONDS", 0.0),
@@ -189,7 +196,7 @@ class TestContentDispatch:
 
     async def test_image_to_video_uploads_first_frame(self, tmp_path: Path):
         img = _img(tmp_path)
-        mock_client = _client(post_side=[_submit_resp()], get_side=[_query_resp("COMPLETED", "https://cdn/v.mp4")])
+        mock_client = _client(post_side=[_submit_resp()], get_side=[_query_resp("completed", "https://cdn/v.mp4")])
         for p in _patches(mock_client, _fake_download(), with_oss=True):
             p.start()
         try:
@@ -211,7 +218,7 @@ class TestContentDispatch:
 
     async def test_image_to_video_with_last_frame(self, tmp_path: Path):
         first, last = _img(tmp_path, "first.png"), _img(tmp_path, "last.png")
-        mock_client = _client(post_side=[_submit_resp()], get_side=[_query_resp("COMPLETED", "https://cdn/v.mp4")])
+        mock_client = _client(post_side=[_submit_resp()], get_side=[_query_resp("completed", "https://cdn/v.mp4")])
         for p in _patches(mock_client, _fake_download(), with_oss=True):
             p.start()
         try:
@@ -231,7 +238,7 @@ class TestContentDispatch:
 
     async def test_reference_to_video(self, tmp_path: Path):
         refs = [_img(tmp_path, f"r{i}.png") for i in range(3)]
-        mock_client = _client(post_side=[_submit_resp()], get_side=[_query_resp("COMPLETED", "https://cdn/v.mp4")])
+        mock_client = _client(post_side=[_submit_resp()], get_side=[_query_resp("completed", "https://cdn/v.mp4")])
         for p in _patches(mock_client, _fake_download(), with_oss=True):
             p.start()
         try:
@@ -257,9 +264,9 @@ class TestPollAndErrors:
         mock_client = _client(
             post_side=[_submit_resp()],
             get_side=[
-                _query_resp("PENDING"),
-                _query_resp("PROCESSING"),
-                _query_resp("COMPLETED", "https://cdn/v.mp4"),
+                _query_resp("pending"),
+                _query_resp("processing"),
+                _query_resp("completed", "https://cdn/v.mp4"),
             ],
         )
         fake_download = _fake_download()
@@ -281,10 +288,10 @@ class TestPollAndErrors:
         assert query_call.args[0] == f"{_BASE}/tecpower/ai/openapi/video/task"
         assert query_call.kwargs["params"] == {"taskId": "task-1"}
 
-    async def test_actual_amount_recorded(self, tmp_path: Path):
+    async def test_actual_amount_recorded_with_response_currency(self, tmp_path: Path):
         mock_client = _client(
             post_side=[_submit_resp()],
-            get_side=[_query_resp("COMPLETED", "https://cdn/v.mp4", actual_amount=1.23)],
+            get_side=[_query_resp("completed", "https://cdn/v.mp4", actual_amount=1.23, currency="USD")],
         )
         with (
             patch("httpx.AsyncClient", return_value=mock_client),
@@ -297,10 +304,28 @@ class TestPollAndErrors:
             result = await b.generate(_req(tmp_path))
 
         assert result.actual_cost == 1.23
-        assert result.actual_currency == "CNY"
+        assert result.actual_currency == "USD"  # 取响应 currency 字段
+
+    async def test_actual_amount_currency_falls_back_when_absent(self, tmp_path: Path):
+        mock_client = _client(
+            post_side=[_submit_resp()],
+            get_side=[_query_resp("completed", "https://cdn/v.mp4", actual_amount=0.5)],
+        )
+        with (
+            patch("httpx.AsyncClient", return_value=mock_client),
+            patch("lib.video_backends.tecdo._POLL_INTERVAL_SECONDS", 0.0),
+            patch("lib.video_backends.tecdo.download_video", _fake_download()),
+        ):
+            from lib.video_backends.tecdo import TecDoVideoBackend
+
+            b = TecDoVideoBackend(api_key="k")
+            result = await b.generate(_req(tmp_path))
+
+        assert result.actual_cost == 0.5
+        assert result.actual_currency == "CNY"  # 响应无 currency → 回落默认
 
     async def test_no_actual_amount_leaves_cost_none(self, tmp_path: Path):
-        mock_client = _client(post_side=[_submit_resp()], get_side=[_query_resp("COMPLETED", "https://cdn/v.mp4")])
+        mock_client = _client(post_side=[_submit_resp()], get_side=[_query_resp("completed", "https://cdn/v.mp4")])
         with (
             patch("httpx.AsyncClient", return_value=mock_client),
             patch("lib.video_backends.tecdo._POLL_INTERVAL_SECONDS", 0.0),
@@ -317,7 +342,7 @@ class TestPollAndErrors:
     async def test_failed_status_raises(self, tmp_path: Path):
         mock_client = _client(
             post_side=[_submit_resp()],
-            get_side=[_make_response(200, {"data": {"status": "FAILED", "error": "upstream boom"}})],
+            get_side=[_make_response(200, {"data": {"status": "failed", "error": "upstream boom"}})],
         )
         fake_download = _fake_download()
         with (
@@ -375,7 +400,7 @@ class TestPollAndErrors:
 
 class TestResume:
     async def test_resume_polls_without_create(self, tmp_path: Path):
-        mock_client = _client(get_side=[_query_resp("COMPLETED", "https://cdn/resumed.mp4")])
+        mock_client = _client(get_side=[_query_resp("completed", "https://cdn/resumed.mp4")])
         fake_download = _fake_download()
         with (
             patch("httpx.AsyncClient", return_value=mock_client),

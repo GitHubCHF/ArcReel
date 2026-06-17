@@ -279,7 +279,8 @@ class TecDoVideoBackend:
 
         final = await poll_with_retry(
             poll_fn=_gated_poll,
-            is_done=lambda state: state.get("status") == "COMPLETED",
+            # 上游 status 实际为小写(completed/failed/...)，文档写的大写不可信，统一大写后比对。
+            is_done=lambda state: (state.get("status") or "").upper() == "COMPLETED",
             is_failed=_extract_failure,
             poll_interval=_POLL_INTERVAL_SECONDS,
             max_wait=self._max_wait(request.duration_seconds),
@@ -307,7 +308,8 @@ class TecDoVideoBackend:
             task_id=task_id,
             generate_audio=request.generate_audio,
             actual_cost=float(actual_amount) if actual_amount is not None else None,
-            actual_currency=_ACTUAL_CURRENCY if actual_amount is not None else None,
+            # 货币以响应 currency 字段为准(实测为 USD)，缺失时回落默认值。
+            actual_currency=(final.get("currency") or _ACTUAL_CURRENCY) if actual_amount is not None else None,
         )
 
     @staticmethod
@@ -328,8 +330,11 @@ class TecDoVideoBackend:
 
 
 def _extract_failure(state: dict) -> str | None:
-    """FAILED 终态 → 错误信息;其余(PENDING/PROCESSING/COMPLETED)返回 None。"""
-    if state.get("status") != "FAILED":
+    """failed 终态 → 错误信息;其余(pending/processing/completed)返回 None。
+
+    上游 status 实际为小写,大写后比对(文档写大写但实测返回 failed/completed)。
+    """
+    if (state.get("status") or "").upper() != "FAILED":
         return None
     msg = state.get("error") or "unknown error"
     return f"钛动视频生成失败: {msg}"

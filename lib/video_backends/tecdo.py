@@ -105,6 +105,8 @@ class TecDoVideoBackend:
         if not api_key:
             raise ValueError("TecDoVideoBackend 需要 api_key")
         self._api_key = api_key
+        # 资产在不同密钥间隔离,缓存按密钥指纹(sha256,不存明文)分层。
+        self._key_hash = hashlib.sha256(api_key.encode("utf-8")).hexdigest()
         self._base_url = _normalize_base_url(base_url)
         self._model = model or DEFAULT_MODEL
         self._http_timeout = http_timeout
@@ -310,7 +312,7 @@ class TecDoVideoBackend:
         from lib.db.repositories.provider_asset_repo import ProviderAssetRepository
 
         async with self._session_factory() as session:
-            row = await ProviderAssetRepository(session).get(PROVIDER_TECDO, content_hash)
+            row = await ProviderAssetRepository(session).get(PROVIDER_TECDO, self._key_hash, content_hash)
             if row is not None and row.status.upper() == "ACTIVE":
                 return row.asset_id
         return None
@@ -323,6 +325,7 @@ class TecDoVideoBackend:
         async with self._session_factory() as session:
             await ProviderAssetRepository(session).upsert(
                 provider=PROVIDER_TECDO,
+                key_hash=self._key_hash,
                 content_hash=content_hash,
                 asset_id=asset_id,
                 status="Active",

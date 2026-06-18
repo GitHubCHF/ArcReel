@@ -20,16 +20,16 @@ async def factory():
 
 async def test_get_missing_returns_none(factory):
     async with factory() as s:
-        assert await ProviderAssetRepository(s).get("tecdo", "deadbeef") is None
+        assert await ProviderAssetRepository(s).get("tecdo", "k1", "deadbeef") is None
 
 
 async def test_upsert_then_get(factory):
     async with factory() as s:
         repo = ProviderAssetRepository(s)
-        await repo.upsert(provider="tecdo", content_hash="h1", asset_id="a1", status="Active")
+        await repo.upsert(provider="tecdo", key_hash="k1", content_hash="h1", asset_id="a1", status="Active")
         await s.commit()
     async with factory() as s:
-        row = await ProviderAssetRepository(s).get("tecdo", "h1")
+        row = await ProviderAssetRepository(s).get("tecdo", "k1", "h1")
         assert row is not None
         assert row.asset_id == "a1"
         assert row.status == "Active"
@@ -39,14 +39,14 @@ async def test_upsert_then_get(factory):
 async def test_upsert_updates_existing(factory):
     async with factory() as s:
         repo = ProviderAssetRepository(s)
-        await repo.upsert(provider="tecdo", content_hash="h1", asset_id="a1", status="Processing")
+        await repo.upsert(provider="tecdo", key_hash="k1", content_hash="h1", asset_id="a1", status="Processing")
         await s.commit()
     async with factory() as s:
         repo = ProviderAssetRepository(s)
-        await repo.upsert(provider="tecdo", content_hash="h1", asset_id="a2", status="Active")
+        await repo.upsert(provider="tecdo", key_hash="k1", content_hash="h1", asset_id="a2", status="Active")
         await s.commit()
     async with factory() as s:
-        row = await ProviderAssetRepository(s).get("tecdo", "h1")
+        row = await ProviderAssetRepository(s).get("tecdo", "k1", "h1")
         assert row is not None
         assert row.asset_id == "a2"
         assert row.status == "Active"
@@ -55,7 +55,19 @@ async def test_upsert_updates_existing(factory):
 async def test_scoped_by_provider(factory):
     async with factory() as s:
         repo = ProviderAssetRepository(s)
-        await repo.upsert(provider="tecdo", content_hash="h1", asset_id="a1", status="Active")
+        await repo.upsert(provider="tecdo", key_hash="k1", content_hash="h1", asset_id="a1", status="Active")
         await s.commit()
     async with factory() as s:
-        assert await ProviderAssetRepository(s).get("other", "h1") is None
+        assert await ProviderAssetRepository(s).get("other", "k1", "h1") is None
+
+
+async def test_scoped_by_key_hash(factory):
+    """同图不同密钥 → 互不命中(资产按密钥隔离)。"""
+    async with factory() as s:
+        repo = ProviderAssetRepository(s)
+        await repo.upsert(provider="tecdo", key_hash="k1", content_hash="h1", asset_id="a1", status="Active")
+        await s.commit()
+    async with factory() as s:
+        assert await ProviderAssetRepository(s).get("tecdo", "k2", "h1") is None
+        row = await ProviderAssetRepository(s).get("tecdo", "k1", "h1")
+        assert row is not None and row.asset_id == "a1"

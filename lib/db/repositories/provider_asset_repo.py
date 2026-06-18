@@ -9,11 +9,12 @@ from lib.db.repositories.base import BaseRepository
 
 
 class ProviderAssetRepository(BaseRepository):
-    async def get(self, provider: str, content_hash: str) -> ProviderAsset | None:
+    async def get(self, provider: str, key_hash: str, content_hash: str) -> ProviderAsset | None:
         return (
             await self.session.execute(
                 select(ProviderAsset).where(
                     ProviderAsset.provider == provider,
+                    ProviderAsset.key_hash == key_hash,
                     ProviderAsset.content_hash == content_hash,
                 )
             )
@@ -23,15 +24,17 @@ class ProviderAssetRepository(BaseRepository):
         self,
         *,
         provider: str,
+        key_hash: str,
         content_hash: str,
         asset_id: str,
         status: str,
         asset_type: str = "Image",
     ) -> ProviderAsset:
-        row = await self.get(provider, content_hash)
+        row = await self.get(provider, key_hash, content_hash)
         if row is None:
             row = ProviderAsset(
                 provider=provider,
+                key_hash=key_hash,
                 content_hash=content_hash,
                 asset_id=asset_id,
                 status=status,

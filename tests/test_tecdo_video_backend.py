@@ -314,16 +314,23 @@ class TestContentDispatch:
 
     async def test_reference_asset_cache_hit_skips_create(self, tmp_path: Path):
         """缓存命中(Active)→ 跳过 asset/create，直接用 asset://{cached}。"""
+        import hashlib
+
         from lib.db.repositories.provider_asset_repo import ProviderAssetRepository
         from lib.providers import PROVIDER_TECDO
         from lib.video_backends.tecdo import _sha256_file
 
         ref = _img(tmp_path, "r.png")
         content_hash = _sha256_file(ref)
+        key_hash = hashlib.sha256(b"k").hexdigest()  # 与 backend(api_key="k") 一致
         factory, engine = await _memory_session_factory()
         async with factory() as s:
             await ProviderAssetRepository(s).upsert(
-                provider=PROVIDER_TECDO, content_hash=content_hash, asset_id="cached-1", status="Active"
+                provider=PROVIDER_TECDO,
+                key_hash=key_hash,
+                content_hash=content_hash,
+                asset_id="cached-1",
+                status="Active",
             )
             await s.commit()
 
@@ -345,6 +352,46 @@ class TestContentDispatch:
         content = mock_client.post.call_args_list[0].kwargs["json"]["content"]
         ref_urls = [c["imageUrl"]["url"] for c in content if c.get("role") == "reference_image"]
         assert ref_urls == ["asset://cached-1"]
+
+    async def test_reference_asset_cache_miss_on_different_key(self, tmp_path: Path):
+        """缓存行属于另一个密钥 → 不命中,重新登记(资产按密钥隔离)。"""
+        from lib.db.repositories.provider_asset_repo import ProviderAssetRepository
+        from lib.providers import PROVIDER_TECDO
+        from lib.video_backends.tecdo import _sha256_file
+
+        ref = _img(tmp_path, "r.png")
+        content_hash = _sha256_file(ref)
+        factory, engine = await _memory_session_factory()
+        async with factory() as s:
+            await ProviderAssetRepository(s).upsert(
+                provider=PROVIDER_TECDO,
+                key_hash="other-key-hash",  # 非当前 api_key 的指纹
+                content_hash=content_hash,
+                asset_id="cached-other",
+                status="Active",
+            )
+            await s.commit()
+
+        mock_client = _client(
+            post_side=[_asset_create_resp("asset-new"), _asset_get_resp("Active", "asset-new"), _submit_resp()],
+            get_side=[_query_resp("completed", "https://cdn/v.mp4")],
+        )
+        for p in _patches(mock_client, _fake_download(), with_oss=True):
+            p.start()
+        try:
+            from lib.video_backends.tecdo import TecDoVideoBackend
+
+            b = TecDoVideoBackend(api_key="k", oss_config=_oss_cfg(), session_factory=factory)
+            await b.generate(_req(tmp_path, reference_images=[ref]))
+        finally:
+            patch.stopall()
+            await engine.dispose()
+
+        # 未命中 → 走了 asset/create,最终 content 用新登记的 asset
+        assert mock_client.post.call_args_list[0].args[0].endswith("/asset/create")
+        content = mock_client.post.call_args_list[-1].kwargs["json"]["content"]
+        ref_urls = [c["imageUrl"]["url"] for c in content if c.get("role") == "reference_image"]
+        assert ref_urls == ["asset://asset-new"]
 
 
 class TestPollAndErrors:

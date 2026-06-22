@@ -64,8 +64,48 @@ class JianyingDraftService:
         script_data = self.pm.load_script(project_name, filename)
         return script_data, filename
 
+    @staticmethod
+    def _is_reference_video(script: dict) -> bool:
+        """参考生视频模式：成片记录在顶层 video_units[] 而非 segments/scenes。"""
+        units = script.get("video_units")
+        return isinstance(units, list) and len(units) > 0
+
+    def _collect_reference_clips(self, units: list, project_dir: Path) -> list[dict[str, Any]]:
+        """参考生视频：成片在 video_units[].generated_assets.video_clip
+        （reference_videos/{unit_id}.mp4），按 unit 顺序拼接。参考视频无旁白/字幕。"""
+        clips = []
+        for unit in units:
+            if not isinstance(unit, dict):
+                continue
+            assets = unit.get("generated_assets") or {}
+            video_clip = assets.get("video_clip")
+            if not video_clip:
+                continue
+
+            abs_path = safe_resolve(project_dir, video_clip)
+            if abs_path is None:
+                logger.warning("video_clip 不可用（越界或文件不存在），已跳过: %s", video_clip)
+                continue
+
+            clips.append(
+                {
+                    "id": unit.get("unit_id", ""),
+                    "duration_seconds": unit.get("duration_seconds", 8),
+                    "video_clip": video_clip,
+                    "abs_path": abs_path,
+                    "novel_text": "",
+                    "transition_to_next": unit.get("transition_to_next", "cut"),
+                    "narration_audio_abs": None,
+                }
+            )
+
+        return clips
+
     def _collect_video_clips(self, script: dict, project_dir: Path) -> list[dict[str, Any]]:
         """从剧本中提取已完成视频的片段列表"""
+        if self._is_reference_video(script):
+            return self._collect_reference_clips(script["video_units"], project_dir)
+
         content_mode = script.get("content_mode", "narration")
         items = script.get("segments" if content_mode == "narration" else "scenes", [])
         id_field = "segment_id" if content_mode == "narration" else "scene_id"
@@ -309,6 +349,10 @@ class JianyingDraftService:
         clips = self._collect_video_clips(script_data, project_dir)
         if not clips:
             raise ValueError(f"第 {episode} 集没有已完成的视频片段，请先生成视频")
+
+        # 参考生视频无字幕/旁白轨：强制按非 narration 渲染，避免生成空字幕轨。
+        if self._is_reference_video(script_data):
+            content_mode = "reference_video"
 
         # 3. 画布尺寸（项目未设 aspect_ratio 时从首个视频自动检测）
         width, height = self._resolve_canvas_size(project, clips[0]["abs_path"])

@@ -103,6 +103,76 @@ class TestCollectVideoClips:
         assert len(clips) == 0
 
 
+class TestCollectReferenceClips:
+    """参考生视频模式：从 video_units 收集成片"""
+
+    def test_collects_from_video_units(self, tmp_path):
+        from server.services.jianying_draft_service import JianyingDraftService
+
+        project_dir = tmp_path / "projects" / "demo"
+        ref_dir = project_dir / "reference_videos"
+        ref_dir.mkdir(parents=True)
+        (ref_dir / "E1U1.mp4").write_bytes(b"fake")
+        (ref_dir / "E1U2.mp4").write_bytes(b"fake")
+
+        script = {
+            "content_mode": "narration",
+            # segments 即使存在也应被忽略（参考模式不读它）
+            "segments": [
+                {"segment_id": "S1", "generated_assets": {"video_clip": "videos/segment_S1.mp4"}},
+            ],
+            "video_units": [
+                {"unit_id": "E1U1", "generated_assets": {"video_clip": "reference_videos/E1U1.mp4"}},
+                {"unit_id": "E1U2", "generated_assets": {"video_clip": "reference_videos/E1U2.mp4"}},
+                {"unit_id": "E1U3", "generated_assets": {}},  # 未生成，跳过
+            ],
+        }
+
+        svc = JianyingDraftService.__new__(JianyingDraftService)
+        clips = svc._collect_video_clips(script, project_dir)
+
+        assert [c["id"] for c in clips] == ["E1U1", "E1U2"]
+        assert all(c["novel_text"] == "" for c in clips)
+        assert all(c["narration_audio_abs"] is None for c in clips)
+
+    def test_skips_missing_reference_files(self, tmp_path):
+        from server.services.jianying_draft_service import JianyingDraftService
+
+        project_dir = tmp_path / "projects" / "demo"
+        project_dir.mkdir(parents=True)
+
+        script = {
+            "content_mode": "narration",
+            "video_units": [
+                {"unit_id": "E1U1", "generated_assets": {"video_clip": "reference_videos/E1U1.mp4"}},
+            ],
+        }
+
+        svc = JianyingDraftService.__new__(JianyingDraftService)
+        assert svc._collect_video_clips(script, project_dir) == []
+
+    def test_empty_video_units_falls_back_to_segments(self, tmp_path):
+        """video_units 为空列表时不算参考模式，仍按 content_mode 走 segments。"""
+        from server.services.jianying_draft_service import JianyingDraftService
+
+        project_dir = tmp_path / "projects" / "demo"
+        videos_dir = project_dir / "videos"
+        videos_dir.mkdir(parents=True)
+        (videos_dir / "segment_S1.mp4").write_bytes(b"fake")
+
+        script = {
+            "content_mode": "narration",
+            "video_units": [],
+            "segments": [
+                {"segment_id": "S1", "novel_text": "x", "generated_assets": {"video_clip": "videos/segment_S1.mp4"}},
+            ],
+        }
+
+        svc = JianyingDraftService.__new__(JianyingDraftService)
+        clips = svc._collect_video_clips(script, project_dir)
+        assert [c["id"] for c in clips] == ["S1"]
+
+
 class TestCollectNarrationAudio:
     """测试从剧本中收集旁白音频路径"""
 
@@ -843,6 +913,64 @@ class TestExportEpisodeDraft:
             raw = json.dumps(content)
             assert "/tmp/" not in raw and "\\Temp\\" not in raw
             assert draft_path in raw
+
+    def test_export_reference_video_mode(self, tmp_path):
+        """参考生视频项目（成片在 video_units）能正常导出，且无字幕轨。"""
+        from lib.project_manager import ProjectManager
+        from server.services.jianying_draft_service import JianyingDraftService
+
+        pm = ProjectManager(tmp_path / "projects")
+        project_dir = tmp_path / "projects" / "refdemo"
+        ref_dir = project_dir / "reference_videos"
+        ref_dir.mkdir(parents=True)
+        make_test_video(ref_dir / "E1U1.mp4")
+        make_test_video(ref_dir / "E1U2.mp4")
+
+        (project_dir / "project.json").write_text(
+            json.dumps(
+                {
+                    "title": "参考项目",
+                    "content_mode": "narration",
+                    "generation_mode": "reference_video",
+                    "aspect_ratio": {"video": "9:16"},
+                    "episodes": [{"episode": 1, "title": "第一集", "script_file": "scripts/episode_1.json"}],
+                },
+                ensure_ascii=False,
+            ),
+            encoding="utf-8",
+        )
+        scripts_dir = project_dir / "scripts"
+        scripts_dir.mkdir()
+        (scripts_dir / "episode_1.json").write_text(
+            json.dumps(
+                {
+                    "content_mode": "narration",
+                    "generation_mode": "reference_video",
+                    "video_units": [
+                        {"unit_id": "E1U1", "generated_assets": {"video_clip": "reference_videos/E1U1.mp4"}},
+                        {"unit_id": "E1U2", "generated_assets": {"video_clip": "reference_videos/E1U2.mp4"}},
+                    ],
+                },
+                ensure_ascii=False,
+            ),
+            encoding="utf-8",
+        )
+
+        svc = JianyingDraftService(pm)
+        zip_path = svc.export_episode_draft(project_name="refdemo", episode=1, draft_path="/mock/JianyingDrafts")
+
+        with zipfile.ZipFile(zip_path) as zf:
+            names = zf.namelist()
+            assert any("E1U1.mp4" in n for n in names)
+            assert any("E1U2.mp4" in n for n in names)
+            content_entry = [n for n in names if "draft_info.json" in n][0]
+            content = json.loads(zf.read(content_entry).decode("utf-8"))
+
+        # 仅视频轨，无字幕轨
+        tracks = content.get("tracks", [])
+        assert len(tracks) == 1
+        assert tracks[0]["type"] == "video"
+        assert len(tracks[0]["segments"]) == 2
 
     def test_episode_not_found_raises(self, tmp_path):
         """集数不存在时抛出 FileNotFoundError"""

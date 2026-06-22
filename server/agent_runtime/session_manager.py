@@ -98,6 +98,42 @@ def _utc_now_iso() -> str:
     return datetime.now(UTC).isoformat().replace("+00:00", "Z")
 
 
+# 视频生成确认门文案（按 locale 三语）。展示在网页对话的 AskUserQuestion 卡片里，
+# 面向用户，故需三语；选项 label 同时是后端判定 allow/deny 的依据（仅"确认"放行）。
+_VIDEO_CONFIRM_TEXT: dict[str, dict[str, str]] = {
+    "zh": {
+        "header": "视频生成确认",
+        "question": "AI 即将调用视频生成（会消耗 API 额度并产生费用）。确认继续？",
+        "confirm": "确认生成",
+        "confirm_desc": "放行本次视频生成任务",
+        "cancel": "取消",
+        "cancel_desc": "不生成；agent 将停止该操作",
+        "deny_reason": "用户在网页端取消了本次视频生成。请勿重试，等待用户进一步指示。",
+        "interrupt_reason": "视频生成确认被中断（会话结束或被用户打断），未执行生成。",
+    },
+    "en": {
+        "header": "Confirm video generation",
+        "question": "The AI is about to generate video (this consumes API credits and incurs cost). Continue?",
+        "confirm": "Generate",
+        "confirm_desc": "Allow this video generation task",
+        "cancel": "Cancel",
+        "cancel_desc": "Do not generate; the agent will stop this action",
+        "deny_reason": "The user cancelled this video generation in the web UI. Do not retry; wait for further instructions.",
+        "interrupt_reason": "Video generation confirmation was interrupted (session ended or user aborted); nothing was generated.",
+    },
+    "vi": {
+        "header": "Xác nhận tạo video",
+        "question": "AI sắp tạo video (việc này tiêu tốn API và phát sinh chi phí). Tiếp tục?",
+        "confirm": "Tạo video",
+        "confirm_desc": "Cho phép tác vụ tạo video này",
+        "cancel": "Hủy",
+        "cancel_desc": "Không tạo; agent sẽ dừng thao tác này",
+        "deny_reason": "Người dùng đã hủy việc tạo video này trên giao diện web. Đừng thử lại; hãy chờ chỉ dẫn tiếp theo.",
+        "interrupt_reason": "Việc xác nhận tạo video bị gián đoạn (phiên kết thúc hoặc người dùng hủy); không có gì được tạo.",
+    },
+}
+
+
 @dataclass
 class PendingQuestion:
     """Tracks a pending AskUserQuestion request."""
@@ -352,6 +388,10 @@ class SessionManager:
         "Glob": "path",
         "Grep": "path",
     }
+    # 视频生成 MCP 工具前缀（generate_video_episode/scene/all/selected 四个都匹配）。
+    # 命中即在执行前走网页端人工二次确认，防止 agent 误触发高消耗视频生成。
+    _VIDEO_CONFIRM_TOOL_PREFIX = "mcp__arcreel__generate_video"
+
     _WRITE_TOOLS = {"Write", "Edit"}
     _CODE_EXTENSIONS_FORBIDDEN = {
         ".py",
@@ -666,6 +706,7 @@ class SessionManager:
         can_use_tool: Callable[[str, dict[str, Any], Any], Any] | None = None,
         locale: str = "zh",
         stderr: Callable[[str], None] | None = None,
+        managed_ref: list[Optional["ManagedSession"]] | None = None,
     ) -> Any:
         """Build ClaudeAgentOptions for a session.
 
@@ -693,6 +734,10 @@ class SessionManager:
                 # Official Python SDK guidance: keep stream open when using
                 # can_use_tool.
                 hook_callbacks.insert(0, self._keep_stream_open_hook)
+                # 视频生成确认门：拦截 mcp__arcreel__generate_video*，弹网页二次确认。
+                # 复用 AskUserQuestion 通道（需 stream 保持打开 → 与 keep-alive 同条件）。
+                if managed_ref is not None:
+                    hook_callbacks.append(self._build_video_confirm_hook(managed_ref, locale))
 
             # Shared dict: PreToolUse saves file backup, PostToolUse restores
             # on corruption.  Keyed by tool_use_id.
@@ -883,6 +928,90 @@ class SessionManager:
             return {"continue_": True}
 
         return _file_access_hook
+
+    def _build_video_confirm_hook(
+        self,
+        managed_ref: list[Optional["ManagedSession"]],
+        locale: str,
+    ) -> Callable[..., Any]:
+        """Build a PreToolUse hook that gates ``mcp__arcreel__generate_video*``.
+
+        视频生成是高消耗动作。本 hook 在 SDK 权限链第 1 步拦截这四个工具
+        （episode/scene/all/selected），复用 AskUserQuestion 通道在网页对话里弹出
+        人工二次确认：用户点"确认生成"才放行（``continue_`` → 交由 allow 规则批准），
+        点"取消"或会话中断则 deny。其它工具一律放行。
+
+        必须放 hook 而非 ``can_use_tool``：``mcp__arcreel__*`` 被 allow 通配符在
+        第 4 步批准，永远到不了第 5 步的 ``can_use_tool``；只有 PreToolUse hook
+        对所有工具生效。
+        """
+        texts = _VIDEO_CONFIRM_TEXT.get(locale) or _VIDEO_CONFIRM_TEXT["zh"]
+
+        async def _video_confirm_hook(
+            input_data: dict[str, Any],
+            _tool_use_id: str | None,
+            _context: Any,
+        ) -> dict[str, Any]:
+            tool_name = str(input_data.get("tool_name") or "")
+            if not tool_name.startswith(self._VIDEO_CONFIRM_TOOL_PREFIX):
+                return {"continue_": True}
+
+            managed = managed_ref[0] if managed_ref else None
+            if managed is None:
+                # 无会话可询问 → 对成本敏感动作 fail-closed，拒绝而非静默放行。
+                return {
+                    "hookSpecificOutput": {
+                        "hookEventName": "PreToolUse",
+                        "permissionDecision": "deny",
+                        "permissionDecisionReason": texts["interrupt_reason"],
+                    },
+                }
+
+            question_text = texts["question"]
+            payload = {
+                "type": "ask_user_question",
+                "question_id": f"aq_{uuid4().hex}",
+                "tool_name": tool_name,
+                "questions": [
+                    {
+                        "header": texts["header"],
+                        "question": question_text,
+                        "options": [
+                            {"label": texts["confirm"], "description": texts["confirm_desc"]},
+                            {"label": texts["cancel"], "description": texts["cancel_desc"]},
+                        ],
+                        "multiSelect": False,
+                    }
+                ],
+                "timestamp": _utc_now_iso(),
+            }
+            pending = managed.add_pending_question(payload)
+            managed.add_message(payload)
+
+            try:
+                answers = await pending.answer_future
+            except Exception:
+                return {
+                    "hookSpecificOutput": {
+                        "hookEventName": "PreToolUse",
+                        "permissionDecision": "deny",
+                        "permissionDecisionReason": texts["interrupt_reason"],
+                    },
+                }
+
+            # 仅当答案精确等于"确认"label 才放行；取消 / 自定义输入 / 缺失一律拒绝。
+            decision = str(answers.get(question_text, "")).strip()
+            if decision == texts["confirm"]:
+                return {"continue_": True}
+            return {
+                "hookSpecificOutput": {
+                    "hookEventName": "PreToolUse",
+                    "permissionDecision": "deny",
+                    "permissionDecisionReason": texts["deny_reason"],
+                },
+            }
+
+        return _video_confirm_hook
 
     def _build_json_validation_hook(
         self,
@@ -1276,6 +1405,7 @@ class SessionManager:
             can_use_tool=await self._build_can_use_tool_callback(temp_id, managed_ref),
             locale=locale,
             stderr=_collect_stderr,
+            managed_ref=managed_ref,
         )
         assistant_model = self._resolve_configured_assistant_model(getattr(options, "env", None))
 
@@ -1490,6 +1620,7 @@ class SessionManager:
                 meta.id,  # SessionMeta.id 就是 sdk_session_id
                 can_use_tool=await self._build_can_use_tool_callback(session_id, managed_ref),
                 stderr=_collect_stderr,
+                managed_ref=managed_ref,
             )
             assistant_model = self._resolve_configured_assistant_model(getattr(options, "env", None))
 

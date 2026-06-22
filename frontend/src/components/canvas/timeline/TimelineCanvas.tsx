@@ -268,15 +268,6 @@ export function TimelineCanvas({
               <Sparkles className="h-3 w-3" />
               <span>{t("batch_generate_storyboards")}</span>
             </button>
-            <button
-              type="button"
-              className="sv-navbtn inline-flex items-center gap-1.5"
-              disabled
-              title={t("batch_generate_videos")}
-            >
-              <Sparkles className="h-3 w-3" />
-              <span>{t("batch_generate_videos")}</span>
-            </button>
             {contentMode === "narration" && onGenerateEpisodeNarration && (
               <button
                 type="button"

@@ -259,20 +259,6 @@ export function GridImageToVideoCanvas({
           </div>
         )}
 
-        {activeTab === "units" && hasScript && (
-          <div className="mr-1 inline-flex items-center gap-1.5">
-            <button
-              type="button"
-              className="sv-navbtn inline-flex items-center gap-1.5"
-              disabled
-              title={t("batch_generate_videos")}
-              aria-label={t("batch_generate_videos")}
-            >
-              <Sparkles className="h-3 w-3" />
-              <span>{t("batch_generate_videos")}</span>
-            </button>
-          </div>
-        )}
       </div>
 
       <div className="min-h-0 flex-1 overflow-hidden">

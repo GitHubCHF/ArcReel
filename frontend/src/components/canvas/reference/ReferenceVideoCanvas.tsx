@@ -8,7 +8,6 @@ import {
   Loader2,
   Save,
   Scissors,
-  Sparkles,
 } from "lucide-react";
 import { UnitList } from "./UnitList";
 import { UnitRail } from "./UnitRail";
@@ -149,8 +148,6 @@ export function ReferenceVideoCanvas({
     return map;
   }, [units, tasksByUnit, optimisticUnitIds, uploadingUnitIds]);
 
-  const generating = !!(selected && statusMap[selected.unit_id] === "running");
-
   const failureMessage = useMemo(() => {
     if (!selected) return null;
     if (statusMap[selected.unit_id] !== "failed") return null;
@@ -243,18 +240,6 @@ export function ReferenceVideoCanvas({
     () => loadUnits(projectName, episode),
     [loadUnits, projectName, episode],
   );
-
-  const handleBatchGenerate = useCallback(async () => {
-    const targets = units.filter((u) => statusMap[u.unit_id] === "pending");
-    if (targets.length === 0) {
-      useAppStore.getState().pushToast(t("reference_batch_nothing_to_do"), "info");
-      return;
-    }
-    for (const u of targets) {
-      // 串行 enqueue —— 让前端依次触发后端 dedup 检查；后端实际仍按 worker 并发跑。
-      await handleGenerate(u.unit_id);
-    }
-  }, [units, statusMap, handleGenerate, t]);
 
   const onAdd = useCallback(() => void handleAdd(), [handleAdd]);
   const onGenerateVoid = useCallback((id: string) => void handleGenerate(id), [handleGenerate]);
@@ -547,17 +532,6 @@ export function ReferenceVideoCanvas({
           )}
         </button>
         <span className="flex-1" />
-        {tab === "units" && (
-          <button
-            type="button"
-            onClick={() => void handleBatchGenerate()}
-            disabled={units.length === 0 || generating}
-            className="focus-ring inline-flex items-center gap-1.5 rounded-md border border-[var(--color-hairline)] bg-[oklch(0.22_0.011_265_/_0.5)] px-2.5 py-1 text-[11.5px] text-[var(--color-text-2)] transition-colors hover:bg-[oklch(0.26_0.013_265_/_0.7)] hover:text-[var(--color-text)] disabled:cursor-not-allowed disabled:opacity-60"
-          >
-            <Sparkles className="h-3.5 w-3.5" aria-hidden="true" />
-            <span>{t("reference_batch_generate")}</span>
-          </button>
-        )}
       </div>
 
       {error && tab === "units" && (

@@ -54,7 +54,8 @@ from lib.video_backends.base import (
 
 logger = logging.getLogger(__name__)
 
-DEFAULT_MODEL = "seedance2.0"
+# 缺省 model（未显式指定时下传给钛动 API）；大小写敏感，须与 registry key 一致。
+DEFAULT_MODEL = "Seedance2.0"
 DEFAULT_BASE_URL = "https://open-power.tec-do.cn"
 
 _CREATE_PATH = "/tecpower/ai/openapi/video/create"

@@ -142,15 +142,15 @@ class TestMeta:
     def test_name_and_model(self):
         from lib.video_backends.tecdo import TecDoVideoBackend
 
-        b = TecDoVideoBackend(api_key="k", model="seedance2.0")
+        b = TecDoVideoBackend(api_key="k", model="Seedance2.0")
         assert b.name == PROVIDER_TECDO
-        assert b.model == "seedance2.0"
+        assert b.model == "Seedance2.0"
 
     def test_default_model_and_base_url(self):
         from lib.video_backends.tecdo import TecDoVideoBackend
 
         b = TecDoVideoBackend(api_key="k")
-        assert b.model == "seedance2.0"
+        assert b.model == "Seedance2.0"
         assert b._base_url == _BASE
 
     def test_host_only_base_url_normalized(self):
@@ -189,13 +189,13 @@ class TestContentDispatch:
         ):
             from lib.video_backends.tecdo import TecDoVideoBackend
 
-            b = TecDoVideoBackend(api_key="k", model="seedance2.0")
+            b = TecDoVideoBackend(api_key="k", model="Seedance2.0")
             result = await b.generate(_req(tmp_path, prompt="a cat"))
 
         submit_call = mock_client.post.call_args_list[0]
         assert submit_call.args[0] == f"{_BASE}/tecpower/ai/openapi/video/create"
         body = submit_call.kwargs["json"]
-        assert body["model"] == "seedance2.0"
+        assert body["model"] == "Seedance2.0"
         assert body["duration"] == 5  # int, 不转 str
         assert body["ratio"] == "9:16"
         assert body["watermark"] is False

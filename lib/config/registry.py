@@ -967,7 +967,8 @@ PROVIDER_REGISTRY: dict[str, ProviderMeta] = {
         optional_keys=["base_url", "video_max_workers"],
         secret_keys=["api_key"],
         models={
-            "seedance2.0": ModelInfo(
+            # model key 即原样下传给钛动 API 的 model 字段值，大小写敏感，须与钛动接受的写法一致。
+            "Seedance2.0": ModelInfo(
                 display_name="Seedance 2.0",
                 media_type="video",
                 capabilities=["text_to_video", "image_to_video", "generate_audio", "seed_control"],
@@ -976,6 +977,16 @@ PROVIDER_REGISTRY: dict[str, ProviderMeta] = {
                 resolutions=["480p", "720p", "1080p"],
                 max_reference_images=9,
                 # 预估价表留空：实际费用以 task 查询返回的 actualAmount 为准（媒体后端透传计费）。
+                pricing=None,
+            ),
+            "Seedance2.0-lite": ModelInfo(
+                display_name="Seedance 2.0 Lite",
+                media_type="video",
+                capabilities=["text_to_video", "image_to_video", "generate_audio", "seed_control"],
+                supported_durations=list(range(4, 16)),
+                resolutions=["480p", "720p", "1080p"],
+                max_reference_images=9,
+                # 同 Seedance2.0：费用以 actualAmount 为准，估价表留空。
                 pricing=None,
             ),
         },

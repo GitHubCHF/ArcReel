@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from sqlalchemy import select
+from sqlalchemy import delete, select
 
 from lib.db.models.provider_asset import ProviderAsset
 from lib.db.repositories.base import BaseRepository
@@ -47,3 +47,12 @@ class ProviderAssetRepository(BaseRepository):
             row.asset_type = asset_type
         await self.session.flush()
         return row
+
+    async def delete_all(self, provider: str | None = None) -> int:
+        """清空供应商资产缓存,返回删除行数。provider 为 None 时清空全部。"""
+        stmt = delete(ProviderAsset)
+        if provider is not None:
+            stmt = stmt.where(ProviderAsset.provider == provider)
+        result = await self.session.execute(stmt)
+        await self.session.flush()
+        return result.rowcount or 0

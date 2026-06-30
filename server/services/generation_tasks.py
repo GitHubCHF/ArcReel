@@ -51,7 +51,7 @@ rate_limiter = get_shared_rate_limiter()
 logger = logging.getLogger(__name__)
 
 # 按 (channel, provider_name, model) 缓存 Backend 实例，避免每次任务重建 API 客户端
-_backend_cache: dict[tuple[str, str, str | None], Any] = {}
+_backend_cache: dict[tuple[str | None, ...], Any] = {}
 
 # 新 provider_id → 旧 backend registry name 的映射
 _PROVIDER_ID_TO_BACKEND: dict[str, str] = {
@@ -164,7 +164,15 @@ async def _get_or_create_video_backend(
     from lib.video_backends import create_backend
 
     effective_model = provider_settings.get("model") or default_video_model or None
-    cache_key = ("video", provider_name, effective_model)
+
+    # tecdo 资产缓存模式参与 cache_key:用户在设置页切换 cached/recreate 后,下次取后端即重建
+    # 实例并按新模式生效(无需重启 worker)。非 tecdo 恒为 None,不影响其 cache_key。
+    backend_name = _PROVIDER_ID_TO_BACKEND.get(provider_name, provider_name)
+    asset_cache_mode: str | None = None
+    if backend_name == PROVIDER_TECDO and not is_custom_provider(provider_name):
+        asset_cache_mode = await resolver.provider_asset_cache_mode()
+
+    cache_key = ("video", provider_name, effective_model, asset_cache_mode)
     if cache_key in _backend_cache:
         return _backend_cache[cache_key]
 
@@ -173,9 +181,6 @@ async def _get_or_create_video_backend(
         backend = await _create_custom_backend(provider_name, effective_model, "video")
         _backend_cache[cache_key] = backend
         return backend
-
-    # 解析 provider_id → backend registry name
-    backend_name = _PROVIDER_ID_TO_BACKEND.get(provider_name, provider_name)
 
     kwargs: dict = {}
     if backend_name == PROVIDER_GEMINI:
@@ -201,6 +206,8 @@ async def _get_or_create_video_backend(
 
             kwargs["oss_config"] = await resolver.oss_config()
             kwargs["session_factory"] = async_session_factory
+            if asset_cache_mode is not None:
+                kwargs["asset_cache_mode"] = asset_cache_mode
 
     backend = create_backend(backend_name, **kwargs)
     _backend_cache[cache_key] = backend

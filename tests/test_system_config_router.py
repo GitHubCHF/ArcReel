@@ -164,8 +164,21 @@ class TestGetSystemConfig:
             "default_audio_backend",
             "narration_voice",
             "narration_speed",
+            "provider_asset_cache_mode",
         }
         assert set(settings.keys()) == expected_keys
+
+    def test_asset_cache_mode_defaults_to_cached(self):
+        mock_svc = _make_mock_svc()
+        with TestClient(_make_app_with_mock(mock_svc)) as client:
+            res = client.get("/api/v1/system/config")
+        assert res.json()["settings"]["provider_asset_cache_mode"] == "cached"
+
+    def test_asset_cache_mode_reflects_recreate(self):
+        mock_svc = _make_mock_svc(settings={"provider_asset_cache_mode": "recreate"})
+        with TestClient(_make_app_with_mock(mock_svc)) as client:
+            res = client.get("/api/v1/system/config")
+        assert res.json()["settings"]["provider_asset_cache_mode"] == "recreate"
 
     def test_options_contain_backend_lists(self):
         mock_svc = _make_mock_svc(ready_providers=["gemini-aistudio"])
@@ -450,3 +463,31 @@ class TestPatchSystemConfig:
         body = res.json()
         assert "settings" in body
         assert "options" in body
+
+    def test_patch_sets_asset_cache_mode(self):
+        mock_svc = _make_mock_svc()
+        with TestClient(self._make_patch_app(mock_svc)) as client:
+            res = client.patch(
+                "/api/v1/system/config",
+                json={"provider_asset_cache_mode": "recreate"},
+            )
+        assert res.status_code == 200
+        assert res.json()["settings"]["provider_asset_cache_mode"] == "recreate"
+
+    def test_patch_rejects_invalid_asset_cache_mode(self):
+        mock_svc = _make_mock_svc()
+        with TestClient(self._make_patch_app(mock_svc)) as client:
+            res = client.patch(
+                "/api/v1/system/config",
+                json={"provider_asset_cache_mode": "bogus"},
+            )
+        assert res.status_code == 422
+
+
+class TestClearProviderAssetCache:
+    def test_clear_empty_returns_zero(self):
+        mock_svc = _make_mock_svc()
+        with TestClient(_make_app_with_mock(mock_svc)) as client:
+            res = client.delete("/api/v1/system/provider-asset-cache")
+        assert res.status_code == 200
+        assert res.json() == {"deleted": 0}

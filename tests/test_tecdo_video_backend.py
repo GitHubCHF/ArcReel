@@ -393,6 +393,57 @@ class TestContentDispatch:
         ref_urls = [c["imageUrl"]["url"] for c in content if c.get("role") == "reference_image"]
         assert ref_urls == ["asset://asset-new"]
 
+    async def test_recreate_mode_bypasses_cache_hit(self, tmp_path: Path):
+        """recreate 模式:即便缓存命中(Active)也重新登记资产、不读不写缓存。"""
+        import hashlib
+
+        from lib.db.repositories.provider_asset_repo import ProviderAssetRepository
+        from lib.providers import PROVIDER_TECDO
+        from lib.video_backends.tecdo import ASSET_CACHE_MODE_RECREATE, TecDoVideoBackend, _sha256_file
+
+        ref = _img(tmp_path, "r.png")
+        content_hash = _sha256_file(ref)
+        key_hash = hashlib.sha256(b"k").hexdigest()
+        factory, engine = await _memory_session_factory()
+        async with factory() as s:
+            await ProviderAssetRepository(s).upsert(
+                provider=PROVIDER_TECDO,
+                key_hash=key_hash,
+                content_hash=content_hash,
+                asset_id="cached-1",
+                status="Active",
+            )
+            await s.commit()
+
+        mock_client = _client(
+            post_side=[_asset_create_resp("asset-fresh"), _asset_get_resp("Active", "asset-fresh"), _submit_resp()],
+            get_side=[_query_resp("completed", "https://cdn/v.mp4")],
+        )
+        for p in _patches(mock_client, _fake_download(), with_oss=True):
+            p.start()
+        try:
+            b = TecDoVideoBackend(
+                api_key="k",
+                oss_config=_oss_cfg(),
+                session_factory=factory,
+                asset_cache_mode=ASSET_CACHE_MODE_RECREATE,
+            )
+            await b.generate(_req(tmp_path, reference_images=[ref]))
+
+            # 重新登记了资产,content 用新 asset 而非缓存的 cached-1
+            assert mock_client.post.call_args_list[0].args[0].endswith("/asset/create")
+            content = mock_client.post.call_args_list[-1].kwargs["json"]["content"]
+            ref_urls = [c["imageUrl"]["url"] for c in content if c.get("role") == "reference_image"]
+            assert ref_urls == ["asset://asset-fresh"]
+
+            # 且未写缓存:原缓存行仍是 cached-1（未被覆盖为 asset-fresh）
+            async with factory() as s:
+                row = await ProviderAssetRepository(s).get(PROVIDER_TECDO, key_hash, content_hash)
+                assert row is not None and row.asset_id == "cached-1"
+        finally:
+            patch.stopall()
+            await engine.dispose()
+
 
 class TestPollAndErrors:
     async def test_polls_through_processing(self, tmp_path: Path):

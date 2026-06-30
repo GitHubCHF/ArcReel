@@ -208,6 +208,7 @@ class SystemConfigPatchRequest(BaseModel):
     oss_access_key_id: str | None = None
     oss_access_key_secret: str | None = None
     oss_upload_prefix: str | None = None
+    provider_asset_cache_mode: str | None = None
 
 
 # Setting keys that map directly to string DB settings
@@ -298,6 +299,9 @@ async def get_system_config(
             "is_set": bool(all_s.get("oss_access_key_secret")),
             "masked": mask_secret(all_s["oss_access_key_secret"]) if all_s.get("oss_access_key_secret") else None,
         },
+        "provider_asset_cache_mode": (
+            "recreate" if (all_s.get("provider_asset_cache_mode") or "").strip().lower() == "recreate" else "cached"
+        ),
     }
 
     options = await _build_options(svc, session)
@@ -403,6 +407,13 @@ async def patch_system_config(
         value = patch["oss_access_key_secret"]
         await svc.set_setting("oss_access_key_secret", str(value).strip() if value else "")
 
+    # 第三方供应商资产缓存模式:仅允许 cached / recreate
+    if "provider_asset_cache_mode" in patch and patch["provider_asset_cache_mode"] is not None:
+        mode = str(patch["provider_asset_cache_mode"]).strip().lower()
+        if mode not in ("cached", "recreate"):
+            raise HTTPException(status_code=422, detail="provider_asset_cache_mode 仅支持 cached / recreate")
+        await svc.set_setting("provider_asset_cache_mode", mode)
+
     # Integer settings with range validation
     _INT_SETTINGS_RANGES = {
         "agent_session_cleanup_delay_seconds": (10, 3600),
@@ -428,3 +439,16 @@ async def patch_system_config(
 
     # Return updated config
     return await get_system_config(_user=_user, svc=svc, session=session)
+
+
+@router.delete("/system/provider-asset-cache")
+async def clear_provider_asset_cache(
+    _user: CurrentUser,
+    session: AsyncSession = Depends(get_async_session),
+) -> dict[str, int]:
+    """清空第三方供应商资产缓存(如钛动 assetId)。下次生成将重新登记资产。"""
+    from lib.db.repositories.provider_asset_repo import ProviderAssetRepository
+
+    deleted = await ProviderAssetRepository(session).delete_all()
+    await session.commit()
+    return {"deleted": deleted}

@@ -38,6 +38,7 @@ function makeConfigResponse(
       oss_access_key_id: "",
       oss_upload_prefix: "",
       oss_access_key_secret: { is_set: false, masked: null },
+      provider_asset_cache_mode: "cached",
       ...overrides,
     },
     options: {

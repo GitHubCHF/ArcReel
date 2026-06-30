@@ -376,6 +376,12 @@ class ConfigResolver:
         async with self._open_session() as (session, svc):
             return await svc.get_oss_config()
 
+    async def provider_asset_cache_mode(self) -> str:
+        """第三方供应商资产缓存模式:cached(默认)/ recreate。非法值回落 cached。"""
+        async with self._open_session() as (session, svc):
+            raw = (await svc.get_setting("provider_asset_cache_mode", "cached")).strip().lower()
+            return "recreate" if raw == "recreate" else "cached"
+
     async def reference_payload_limits(self, provider_id: str | None) -> tuple[int, int]:
         """解析参考上传副本的 (total_max_bytes, single_max_bytes)。
 

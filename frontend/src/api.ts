@@ -382,6 +382,11 @@ class API {
     });
   }
 
+  /** 清空第三方供应商资产缓存（如钛动 assetId），返回删除条数。 */
+  static async clearProviderAssetCache(): Promise<{ deleted: number }> {
+    return this.request("/system/provider-asset-cache", { method: "DELETE" });
+  }
+
 
   // ==================== 项目管理 ====================
 

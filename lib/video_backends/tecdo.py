@@ -81,6 +81,11 @@ _MAX_DURATION = 15
 # 参考图上限(文档仅称"可多张"未给数,沿用 seedance 常见 9 上限)。
 _MAX_REFERENCE_IMAGES = 9
 
+# 资产缓存模式:cached=按内容哈希复用 assetId(默认);recreate=每次请求重新登记资产、
+# 不读不写缓存(规避上游资产过期导致 "asset not found" 整条失败)。
+ASSET_CACHE_MODE_CACHED = "cached"
+ASSET_CACHE_MODE_RECREATE = "recreate"
+
 
 def _normalize_base_url(base_url: str | None) -> str:
     """容忍用户填到 host(或带尾斜杠),归一化为不带尾斜杠的 base。空值回落官方域名。"""
@@ -102,10 +107,15 @@ class TecDoVideoBackend:
         http_timeout: float = 60.0,
         oss_config: dict[str, str] | None = None,
         session_factory: async_sessionmaker | None = None,
+        asset_cache_mode: str = ASSET_CACHE_MODE_CACHED,
     ) -> None:
         if not api_key:
             raise ValueError("TecDoVideoBackend 需要 api_key")
         self._api_key = api_key
+        # 资产缓存模式:recreate 时每次请求重新登记资产、跳过持久化缓存读写。
+        self._asset_cache_mode = (
+            ASSET_CACHE_MODE_RECREATE if asset_cache_mode == ASSET_CACHE_MODE_RECREATE else ASSET_CACHE_MODE_CACHED
+        )
         # 资产在不同密钥间隔离,缓存按密钥指纹(sha256,不存明文)分层。
         self._key_hash = hashlib.sha256(api_key.encode("utf-8")).hexdigest()
         self._base_url = _normalize_base_url(base_url)
@@ -243,23 +253,28 @@ class TecDoVideoBackend:
     async def _resolve_reference_asset(self, client: httpx.AsyncClient, path: Path) -> str:
         """参考图(角色集)→ ``asset://{assetId}``。
 
-        按图片内容哈希持久化复用:命中且 Active 直接返回,跳过所有网络调用。
+        cached 模式:按图片内容哈希持久化复用,命中且 Active 直接返回跳过所有网络调用;
         未命中则 OSS 换公网 URL → asset/create 登记 → 轮询 Active → 写缓存。
+        recreate 模式:跳过缓存读写,每次都重新登记资产(规避上游资产过期)。
         """
         if not path.is_file():
             raise VideoCapabilityError("video_start_image_unreadable", model=self._model, name=path.name)
-        content_hash = await asyncio.to_thread(_sha256_file, path)
 
-        cached = await self._get_cached_asset(content_hash)
-        if cached is not None:
-            logger.info("钛动资产缓存命中: hash=%s asset_id=%s", content_hash[:12], cached)
-            return f"asset://{cached}"
+        cache_enabled = self._asset_cache_mode != ASSET_CACHE_MODE_RECREATE
+        content_hash: str | None = None
+        if cache_enabled:
+            content_hash = await asyncio.to_thread(_sha256_file, path)
+            cached = await self._get_cached_asset(content_hash)
+            if cached is not None:
+                logger.info("钛动资产缓存命中: hash=%s asset_id=%s", content_hash[:12], cached)
+                return f"asset://{cached}"
 
         oss_url = await self._upload_image(path)
         asset_id = await self._create_asset(client, oss_url, name=path.name)
         logger.info("钛动资产已创建,等待过审: asset_id=%s", asset_id)
         await self._wait_asset_active(client, asset_id)
-        await self._save_cached_asset(content_hash, asset_id)
+        if cache_enabled and content_hash is not None:
+            await self._save_cached_asset(content_hash, asset_id)
         return f"asset://{asset_id}"
 
     @with_retry_async(

@@ -25,6 +25,7 @@ export interface SystemConfigSettings {
   oss_access_key_id: string;
   oss_upload_prefix: string;
   oss_access_key_secret: { is_set: boolean; masked: string | null };
+  provider_asset_cache_mode: "cached" | "recreate";
 }
 
 export interface SystemConfigOptions {
@@ -84,4 +85,5 @@ export interface SystemConfigPatch {
   oss_access_key_id?: string;
   oss_access_key_secret?: string;
   oss_upload_prefix?: string;
+  provider_asset_cache_mode?: "cached" | "recreate";
 }

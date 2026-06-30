@@ -62,6 +62,7 @@ export function MediaModelSection() {
   const [customProviders, setCustomProviders] = useState<CustomProviderInfo[]>([]);
   const [draft, setDraft] = useState<SystemConfigPatch>({});
   const [saving, setSaving] = useState(false);
+  const [clearingCache, setClearingCache] = useState(false);
 
   const isDirty = Object.keys(draft).length > 0;
   useWarnUnsaved(isDirty);
@@ -103,6 +104,18 @@ export function MediaModelSection() {
     }
   }, [draft, fetchConfig, t]);
 
+  const handleClearCache = useCallback(async () => {
+    setClearingCache(true);
+    try {
+      const { deleted } = await API.clearProviderAssetCache();
+      useAppStore.getState().pushToast(t("asset_cache_cleared", { count: deleted }), "success");
+    } catch (err) {
+      useAppStore.getState().pushToast(t("save_failed", { message: errMsg(err) }), "error");
+    } finally {
+      setClearingCache(false);
+    }
+  }, [t]);
+
   if (!settings || !options) {
     return (
       <div className="flex items-center gap-2 px-1 py-12 text-text-3">
@@ -135,6 +148,8 @@ export function MediaModelSection() {
   const currentNarrationVoice = draft.narration_voice ?? settings.narration_voice ?? "";
   const currentNarrationSpeed =
     "narration_speed" in draft ? draft.narration_speed : settings.narration_speed;
+  const currentAssetCacheMode =
+    draft.provider_asset_cache_mode ?? settings.provider_asset_cache_mode ?? "cached";
 
   const ossInputCls =
     "w-full rounded-[8px] border border-hairline bg-bg-grad-a/55 px-3 py-2 text-[12.5px] text-text placeholder:text-text-4 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent";
@@ -363,6 +378,57 @@ export function MediaModelSection() {
             />
           </div>
           {ossField("oss_upload_prefix", t("oss_upload_prefix"), "arcreel/")}
+        </div>
+      </SectionCard>
+
+      {/* Provider asset cache (tecdo assetId) */}
+      <SectionCard
+        kicker="Asset Cache"
+        title={t("asset_cache_title")}
+        description={t("asset_cache_desc")}
+      >
+        <div className="space-y-4">
+          <div>
+            <label
+              htmlFor="asset-cache-mode-select"
+              className="mb-1.5 block font-mono text-[10px] font-bold uppercase tracking-[0.14em] text-text-4"
+            >
+              {t("asset_cache_mode_label")}
+            </label>
+            <select
+              id="asset-cache-mode-select"
+              value={currentAssetCacheMode}
+              onChange={(e) =>
+                setDraft((prev) => ({
+                  ...prev,
+                  provider_asset_cache_mode: e.target.value as "cached" | "recreate",
+                }))
+              }
+              className="w-full rounded-[8px] border border-hairline bg-bg-grad-a/55 px-3 py-2 text-[12.5px] text-text focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent"
+            >
+              <option value="cached">{t("asset_cache_mode_cached")}</option>
+              <option value="recreate">{t("asset_cache_mode_recreate")}</option>
+            </select>
+            <p className="mt-1 text-[11px] text-text-4">
+              {currentAssetCacheMode === "recreate"
+                ? t("asset_cache_mode_recreate_hint")
+                : t("asset_cache_mode_cached_hint")}
+            </p>
+          </div>
+          <div>
+            <button
+              type="button"
+              onClick={() => void handleClearCache()}
+              disabled={clearingCache}
+              className="inline-flex items-center gap-2 rounded-[8px] border border-hairline bg-bg-grad-a/55 px-4 py-2 text-[12.5px] text-text-2 transition-colors hover:border-hairline-strong hover:bg-bg-grad-a hover:text-text focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent disabled:cursor-not-allowed disabled:opacity-60"
+            >
+              {clearingCache ? (
+                <Loader2 className="h-3.5 w-3.5 motion-safe:animate-spin" aria-hidden />
+              ) : null}
+              {t("clear_asset_cache")}
+            </button>
+            <p className="mt-1 text-[11px] text-text-4">{t("clear_asset_cache_hint")}</p>
+          </div>
         </div>
       </SectionCard>
 

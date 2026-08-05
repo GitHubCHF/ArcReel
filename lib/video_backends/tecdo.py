@@ -240,19 +240,14 @@ class TecDoVideoBackend:
         return payload
 
     def _get_uploader(self) -> OSSUploader:
-        """惰性构造 OSS 上传器。未配置 OSS 时 fail-loud(图生/参考生视频依赖它)。
-
-        public_read:钛极网关的资产服务入库时会剥掉 URL query 串再异步重拉,签名 URL
-        必 403(资产永远卡 Processing)。改为对象级 public-read + 裸 URL(桶保持私有,
-        key 为 uuid 随机串不可枚举),同时规避签名 2h 过期与网关延迟拉取的冲突。
-        """
+        """惰性构造 OSS 上传器(签名 URL,与旧平台跑通时逻辑一致)。未配置 OSS 时 fail-loud。"""
         if self._uploader is None:
             if not self._oss_config.is_complete:
                 raise RuntimeError(
                     "钛动图生/参考生视频需要先在系统设置配置阿里云 OSS"
                     "(endpoint / bucket / access_key_id / access_key_secret)"
                 )
-            self._uploader = OSSUploader(self._oss_config, public_read=True)
+            self._uploader = OSSUploader(self._oss_config)
         return self._uploader
 
     # ── 参考图 → 资产库(角色集) ────────────────────────────────────────

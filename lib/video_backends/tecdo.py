@@ -240,14 +240,19 @@ class TecDoVideoBackend:
         return payload
 
     def _get_uploader(self) -> OSSUploader:
-        """惰性构造 OSS 上传器。未配置 OSS 时 fail-loud(图生/参考生视频依赖它)。"""
+        """惰性构造 OSS 上传器。未配置 OSS 时 fail-loud(图生/参考生视频依赖它)。
+
+        public_read:钛极网关的资产服务入库时会剥掉 URL query 串再异步重拉,签名 URL
+        必 403(资产永远卡 Processing)。改为对象级 public-read + 裸 URL(桶保持私有,
+        key 为 uuid 随机串不可枚举),同时规避签名 2h 过期与网关延迟拉取的冲突。
+        """
         if self._uploader is None:
             if not self._oss_config.is_complete:
                 raise RuntimeError(
                     "钛动图生/参考生视频需要先在系统设置配置阿里云 OSS"
                     "(endpoint / bucket / access_key_id / access_key_secret)"
                 )
-            self._uploader = OSSUploader(self._oss_config)
+            self._uploader = OSSUploader(self._oss_config, public_read=True)
         return self._uploader
 
     # ── 参考图 → 资产库(角色集) ────────────────────────────────────────
@@ -279,6 +284,8 @@ class TecDoVideoBackend:
 
         oss_url = await self._upload_image(path)
         group_id = await self._get_or_create_group(client)
+        # 打实际下发 URL:网关侧会剥 query 后回显/重拉,排障时可与 GetAsset 回显对比。
+        logger.info("钛动登记资产: name=%s url=%s", path.name, oss_url)
         asset_id = await self._create_asset(client, oss_url, group_id=group_id, name=path.name)
         logger.info("钛动资产已创建,等待过审: asset_id=%s", asset_id)
         await self._wait_asset_active(client, asset_id)
@@ -349,6 +356,10 @@ class TecDoVideoBackend:
             max_wait=_ASSET_POLL_TIMEOUT_SECONDS,
             retry_if=should_retry_poll,
             label="TecDo-Asset",
+            # 网关实际返回结构可能与文档不一致,打原始 Result 便于排障。
+            on_progress=lambda s, elapsed: logger.info(
+                "钛动资产过审中... asset_id=%s elapsed=%ds result=%s", asset_id, int(elapsed), s
+            ),
         )
 
     async def _ark_action(self, client: httpx.AsyncClient, action: str, payload: dict) -> dict:

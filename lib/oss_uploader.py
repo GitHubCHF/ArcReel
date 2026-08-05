@@ -1,8 +1,12 @@
 """阿里云 OSS 上传工具。
 
 供需要"本地图 → 公网可访问 URL"的第三方视频后端复用(如钛动 tecdo:其图片入参要求
-URL,而平台自带的上传接口需单独开通)。默认上传到私有桶后返回带签名的临时 URL
-(默认 2 小时有效),无需把桶设为公共读。
+URL)。两种模式:
+
+- 默认:上传到私有桶后返回带签名的临时 URL(默认 2 小时有效),无需把桶设为公共读
+- ``public_read=True``:对象级 public-read ACL + 返回不带签名的裸 URL(桶仍可保持私有,
+  对象 key 为 uuid 随机串不可枚举)。适配"存 URL、稍后异步拉取"的平台——例如钛极网关
+  的资产服务会剥掉 URL query 串再重拉,签名 URL 必 403
 
 oss2 的网络调用是同步阻塞的,异步调用方需用 ``asyncio.to_thread`` 包裹 ``upload_file``。
 """
@@ -13,6 +17,7 @@ import logging
 import uuid
 from dataclasses import dataclass
 from pathlib import Path
+from urllib.parse import quote, urlsplit
 
 import oss2
 
@@ -59,23 +64,37 @@ class OSSUploader:
         *,
         sign_expires_seconds: int = DEFAULT_SIGN_EXPIRES_SECONDS,
         connect_timeout_seconds: int = DEFAULT_CONNECT_TIMEOUT_SECONDS,
+        public_read: bool = False,
     ) -> None:
         if not config.is_complete:
             raise ValueError("OSS 配置不完整:需要 endpoint / bucket / access_key_id / access_key_secret")
         self._config = config
         self._sign_expires = sign_expires_seconds
+        self._public_read = public_read
         self._endpoint = config.endpoint if "://" in config.endpoint else f"https://{config.endpoint}"
         auth = oss2.Auth(config.access_key_id, config.access_key_secret)
         self._bucket = oss2.Bucket(auth, self._endpoint, config.bucket, connect_timeout=connect_timeout_seconds)
 
     def upload_file(self, path: Path, *, key: str | None = None) -> str:
-        """上传文件,返回 GET 签名 URL。同步阻塞,异步调用方请用 asyncio.to_thread 包裹。"""
+        """上传文件,返回可访问 URL(默认签名 URL;public_read 模式为裸 URL)。
+
+        同步阻塞,异步调用方请用 asyncio.to_thread 包裹。
+        """
         object_key = key or self._build_key(path)
         logger.info("OSS 上传开始: endpoint=%s bucket=%s key=%s", self._endpoint, self._config.bucket, object_key)
-        self._bucket.put_object_from_file(object_key, str(path))
-        url: str = self._bucket.sign_url("GET", object_key, self._sign_expires, slash_safe=True)
+        if self._public_read:
+            self._bucket.put_object_from_file(object_key, str(path), headers={"x-oss-object-acl": "public-read"})
+            url = self._plain_url(object_key)
+        else:
+            self._bucket.put_object_from_file(object_key, str(path))
+            url = self._bucket.sign_url("GET", object_key, self._sign_expires, slash_safe=True)
         logger.info("OSS 上传完成: key=%s", object_key)
         return url
+
+    def _plain_url(self, object_key: str) -> str:
+        """不带签名的公网 URL:https://{bucket}.{endpoint_host}/{key}。"""
+        host = urlsplit(self._endpoint).netloc
+        return f"https://{self._config.bucket}.{host}/{quote(object_key)}"
 
     def _build_key(self, path: Path) -> str:
         name = f"{uuid.uuid4().hex}{path.suffix.lower()}"

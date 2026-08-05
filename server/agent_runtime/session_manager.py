@@ -98,8 +98,8 @@ def _utc_now_iso() -> str:
     return datetime.now(UTC).isoformat().replace("+00:00", "Z")
 
 
-# 视频生成确认门文案（按 locale 三语）。展示在网页对话的 AskUserQuestion 卡片里，
-# 面向用户，故需三语；选项 label 同时是后端判定 allow/deny 的依据（仅"确认"放行）。
+# 视频生成确认门文案（按 locale 双语）。展示在网页对话的 AskUserQuestion 卡片里，
+# 面向用户，故需双语；选项 label 同时是后端判定 allow/deny 的依据（仅"确认"放行）。
 _VIDEO_CONFIRM_TEXT: dict[str, dict[str, str]] = {
     "zh": {
         "header": "视频生成确认",
@@ -120,16 +120,6 @@ _VIDEO_CONFIRM_TEXT: dict[str, dict[str, str]] = {
         "cancel_desc": "Do not generate; the agent will stop this action",
         "deny_reason": "The user cancelled this video generation in the web UI. Do not retry; wait for further instructions.",
         "interrupt_reason": "Video generation confirmation was interrupted (session ended or user aborted); nothing was generated.",
-    },
-    "vi": {
-        "header": "Xác nhận tạo video",
-        "question": "AI sắp tạo video (việc này tiêu tốn API và phát sinh chi phí). Tiếp tục?",
-        "confirm": "Tạo video",
-        "confirm_desc": "Cho phép tác vụ tạo video này",
-        "cancel": "Hủy",
-        "cancel_desc": "Không tạo; agent sẽ dừng thao tác này",
-        "deny_reason": "Người dùng đã hủy việc tạo video này trên giao diện web. Đừng thử lại; hãy chờ chỉ dẫn tiếp theo.",
-        "interrupt_reason": "Việc xác nhận tạo video bị gián đoạn (phiên kết thúc hoặc người dùng hủy); không có gì được tạo.",
     },
 }
 

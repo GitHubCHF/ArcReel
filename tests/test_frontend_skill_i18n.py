@@ -6,7 +6,7 @@ The single source of truth is the set of ``SKILL.md`` files under
 renders each skill chip via i18n ``dashboard:skill_name_<id>`` where the id is
 the skill directory name with ``-`` replaced by ``_``.
 
-If a backend skill ships without a corresponding translation in zh/en/vi, the
+If a backend skill ships without a corresponding translation in zh/en, the
 chip falls back to ``/skill-name`` (raw id). This test fails CI in that case
 so the gap is caught at PR time.
 """
@@ -23,7 +23,7 @@ from lib.profile_manifest import VALID_CONTENT_MODES
 REPO_ROOT = Path(__file__).resolve().parent.parent
 SKILLS_ROOT = REPO_ROOT / "agent_runtime_profile" / ".claude" / "skills"
 DASHBOARD_TS = "frontend/src/i18n/{locale}/dashboard.ts"
-LOCALES = ("zh", "en", "vi")
+LOCALES = ("zh", "en")
 
 _SKILL_KEY_RE = re.compile(r"""['"](skill_name_[a-z0-9_]+)['"]\s*:""")
 _USER_INVOCABLE_RE = re.compile(r"^\s*user-invocable\s*:\s*(\S+)", re.MULTILINE)

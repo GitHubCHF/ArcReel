@@ -22,7 +22,7 @@ MESSAGES: dict[str, str] = {
     "provider_desc_vidu": "Shengshu Vidu video platform supporting text-to-video, image-to-video, first-last frame, reference-to-video and reference-to-image. Image and video only.",
     "provider_desc_dashscope": "Alibaba Cloud Model Studio (DashScope) full-modality platform supporting Qwen text, Qwen-Image / Wan images, and HappyHorse / Wan video (including reference-to-video).",
     "provider_desc_runninghub": "RunningHub standard model API, integrating ByteDance Seedance 2.0 video generation (text-/image-/reference-to-video). Video only.",
-    "provider_desc_tecdo": "TecDo capability platform API, integrating ByteDance Seedance 2.0 video generation (text-/image-/reference-to-video). Video only.",
+    "provider_desc_tecdo": "TecDo model gateway API, integrating ByteDance Seedance 2.0 video generation (text-/image-/reference-to-video). Video only.",
     # Agent preset notes (lib/agent_provider_catalog.py)
     "preset_notes_deepseek": "DeepSeek official Anthropic-compat endpoint; needs sk- prefixed key.",
     "preset_notes_xiaomi_mimo": "Xiaomi MiMo only accepts known model names; no public model list.",

@@ -962,7 +962,7 @@ PROVIDER_REGISTRY: dict[str, ProviderMeta] = {
     ),
     "tecdo": ProviderMeta(
         display_name="TecDo",
-        description="钛动能力平台 API，接入字节 seedance 2.0 视频生成（文生/图生/参考生视频），仅视频能力。",
+        description="钛极模型网关（钛动）API，接入字节 seedance 2.0 视频生成（文生/图生/参考生视频），仅视频能力。",
         required_keys=["api_key"],
         optional_keys=["base_url", "video_max_workers"],
         secret_keys=["api_key"],
@@ -976,7 +976,7 @@ PROVIDER_REGISTRY: dict[str, ProviderMeta] = {
                 supported_durations=list(range(4, 16)),
                 resolutions=["480p", "720p", "1080p"],
                 max_reference_images=9,
-                # 预估价表留空：实际费用以 task 查询返回的 actualAmount 为准（媒体后端透传计费）。
+                # 预估价表留空：钛极网关仅回报 usage.total_tokens（金额在平台侧结算），无本地可估价源。
                 pricing=None,
             ),
             "Seedance2.0-lite": ModelInfo(
@@ -986,11 +986,11 @@ PROVIDER_REGISTRY: dict[str, ProviderMeta] = {
                 supported_durations=list(range(4, 16)),
                 resolutions=["480p", "720p", "1080p"],
                 max_reference_images=9,
-                # 同 Seedance2.0：费用以 actualAmount 为准，估价表留空。
+                # 同 Seedance2.0：估价表留空。
                 pricing=None,
             ),
         },
-        default_base_url="https://open-power.tec-do.cn",
+        default_base_url="https://api.tcgateway.top",
     ),
 }
 

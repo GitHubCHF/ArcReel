@@ -22,7 +22,7 @@ MESSAGES: dict[str, str] = {
     "provider_desc_vidu": "生数科技 Vidu 视频生成平台，支持文生视频、图生视频、首尾帧、参考生视频与参考生图，仅图片与视频能力。",
     "provider_desc_dashscope": "阿里云百炼（Model Studio）全模态平台，支持 Qwen 文本、Qwen-Image / 万相图像与 HappyHorse / 万相视频（含参考生视频）。",
     "provider_desc_runninghub": "RunningHub 标准模型 API，接入字节 seedance 2.0 视频生成（文生/图生/参考生视频），仅视频能力。",
-    "provider_desc_tecdo": "钛动能力平台 API，接入字节 seedance 2.0 视频生成（文生/图生/参考生视频），仅视频能力。",
+    "provider_desc_tecdo": "钛极模型网关（钛动）API，接入字节 seedance 2.0 视频生成（文生/图生/参考生视频），仅视频能力。",
     # Agent preset notes (lib/agent_provider_catalog.py)
     "preset_notes_deepseek": "DeepSeek 官方 Anthropic 兼容端点，需 sk- 开头的 API Key",
     "preset_notes_xiaomi_mimo": "小米 MiMo 仅支持已知模型名，未公开模型列表",

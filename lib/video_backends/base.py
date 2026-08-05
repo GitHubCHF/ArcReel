@@ -317,7 +317,7 @@ class VideoGenerationResult:
     task_id: str | None = None
     generate_audio: bool | None = None
 
-    # provider 回报的实际消耗金额（如钛动 task 查询返回 actualAmount）。非空时由
+    # provider 回报的实际消耗金额（部分中转平台 task 查询会返回消耗金额）。非空时由
     # media_generator 以此覆盖 ApiCall.cost_amount，而非按 registry 价表估算。
     actual_cost: float | None = None
     actual_currency: str | None = None

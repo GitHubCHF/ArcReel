@@ -55,4 +55,5 @@ class ProviderAssetRepository(BaseRepository):
             stmt = stmt.where(ProviderAsset.provider == provider)
         result = await self.session.execute(stmt)
         await self.session.flush()
-        return result.rowcount or 0
+        # DML 语句返回的实际是 CursorResult(带 rowcount)；基类 Result 类型上无此属性。
+        return getattr(result, "rowcount", 0) or 0

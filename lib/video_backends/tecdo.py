@@ -351,14 +351,14 @@ class TecDoVideoBackend:
             max_wait=_ASSET_POLL_TIMEOUT_SECONDS,
             retry_if=should_retry_poll,
             label="TecDo-Asset",
-            # 网关实际返回结构可能与文档不一致,打原始 Result 便于排障。
-            on_progress=lambda s, elapsed: logger.info(
-                "钛动资产过审中... asset_id=%s elapsed=%ds result=%s", asset_id, int(elapsed), s
-            ),
         )
 
     async def _ark_action(self, client: httpx.AsyncClient, action: str, payload: dict) -> dict:
-        """Ark Action 风格调用:``POST /api/ark?Action=X&Version=...``,返回响应 JSON。"""
+        """Ark Action 风格调用:``POST /api/ark?Action=X&Version=...``,返回响应 JSON。
+
+        请求/响应全量打日志:新网关行为与文档常有出入,排障靠原始报文。
+        """
+        logger.info("钛动 Action=%s 请求: %s", action, payload)
         resp = await client.post(
             f"{self._base_url}{_ARK_ACTION_PATH}",
             params={"Action": action, "Version": _ARK_ACTION_VERSION},
@@ -366,7 +366,9 @@ class TecDoVideoBackend:
             headers=self._json_headers(),
         )
         resp.raise_for_status()
-        return resp.json()
+        body = resp.json()
+        logger.info("钛动 Action=%s 响应: %s", action, body)
+        return body
 
     async def _get_cached_asset(self, content_hash: str) -> str | None:
         """查持久化缓存:返回 Active 资产的 assetId,否则 None(含无 DB 时)。"""
@@ -423,6 +425,7 @@ class TecDoVideoBackend:
         )
         resp.raise_for_status()
         body = resp.json()
+        logger.info("钛动创建任务响应: %s", body)
         task_id = body.get("id")
         if not task_id:
             raise RuntimeError(f"钛动创建任务返回体缺少 id: {body}")
@@ -462,10 +465,10 @@ class TecDoVideoBackend:
             max_wait=self._max_wait(request.duration_seconds),
             retry_if=should_retry_poll,
             label="TecDo",
-            on_progress=lambda v, elapsed: logger.info(
-                "钛动视频生成中... status=%s elapsed=%ds", v.get("status"), int(elapsed)
-            ),
+            # 打完整轮询响应(不只 status):网关返回结构与文档常有出入,排障靠原始报文。
+            on_progress=lambda v, elapsed: logger.info("钛动视频生成中... elapsed=%ds 响应=%s", int(elapsed), v),
         )
+        logger.info("钛动任务终态响应: %s", final)
 
         video_url = (final.get("content") or {}).get("video_url")
         if not video_url:

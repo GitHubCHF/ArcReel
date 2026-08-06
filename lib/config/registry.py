@@ -968,7 +968,7 @@ PROVIDER_REGISTRY: dict[str, ProviderMeta] = {
         secret_keys=["api_key"],
         models={
             # model key 即原样下传给钛动 API 的 model 字段值，大小写敏感，须与钛动接受的写法一致。
-            "Seedance2.0": ModelInfo(
+            "seedance-2-0-260128": ModelInfo(
                 display_name="Seedance 2.0",
                 media_type="video",
                 capabilities=["text_to_video", "image_to_video", "generate_audio", "seed_control"],
@@ -979,14 +979,14 @@ PROVIDER_REGISTRY: dict[str, ProviderMeta] = {
                 # 预估价表留空：钛极网关仅回报 usage.total_tokens（金额在平台侧结算），无本地可估价源。
                 pricing=None,
             ),
-            "Seedance2.0-lite": ModelInfo(
-                display_name="Seedance 2.0 Lite",
+            "seedance-2-0-fast-260128": ModelInfo(
+                display_name="Seedance 2.0 Fast",
                 media_type="video",
                 capabilities=["text_to_video", "image_to_video", "generate_audio", "seed_control"],
                 supported_durations=list(range(4, 16)),
                 resolutions=["480p", "720p", "1080p"],
                 max_reference_images=9,
-                # 同 Seedance2.0：估价表留空。
+                # 同 seedance-2-0-260128：估价表留空。
                 pricing=None,
             ),
         },

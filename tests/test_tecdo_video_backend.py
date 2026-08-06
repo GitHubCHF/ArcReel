@@ -56,7 +56,7 @@ def _make_http_error(status_code: int, message: str) -> httpx.HTTPStatusError:
 
 
 def _submit_resp(task_id: str = "task-1") -> MagicMock:
-    return _make_response(200, {"id": task_id, "model": "Seedance2.0", "status": "queued", "content": {}})
+    return _make_response(200, {"id": task_id, "model": "seedance-2-0-260128", "status": "queued", "content": {}})
 
 
 def _query_resp(
@@ -65,7 +65,7 @@ def _query_resp(
     total_tokens: int | None = None,
     error: str | dict | None = None,
 ) -> MagicMock:
-    body: dict = {"id": "task-1", "model": "Seedance2.0", "status": status}
+    body: dict = {"id": "task-1", "model": "seedance-2-0-260128", "status": status}
     if url is not None:
         body["content"] = {"video_url": url}
     if total_tokens is not None:
@@ -150,15 +150,15 @@ class TestMeta:
     def test_name_and_model(self):
         from lib.video_backends.tecdo import TecDoVideoBackend
 
-        b = TecDoVideoBackend(api_key="k", model="Seedance2.0")
+        b = TecDoVideoBackend(api_key="k", model="seedance-2-0-260128")
         assert b.name == PROVIDER_TECDO
-        assert b.model == "Seedance2.0"
+        assert b.model == "seedance-2-0-260128"
 
     def test_default_model_and_base_url(self):
         from lib.video_backends.tecdo import TecDoVideoBackend
 
         b = TecDoVideoBackend(api_key="k")
-        assert b.model == "Seedance2.0"
+        assert b.model == "seedance-2-0-260128"
         assert b._base_url == _BASE
 
     def test_host_only_base_url_normalized(self):
@@ -197,14 +197,14 @@ class TestContentDispatch:
         ):
             from lib.video_backends.tecdo import TecDoVideoBackend
 
-            b = TecDoVideoBackend(api_key="k", model="Seedance2.0")
+            b = TecDoVideoBackend(api_key="k", model="seedance-2-0-260128")
             result = await b.generate(_req(tmp_path, prompt="a cat"))
 
         submit_call = mock_client.post.call_args_list[0]
         assert submit_call.args[0] == _TASKS_URL
         assert submit_call.kwargs["headers"]["Authorization"] == "Bearer k"
         body = submit_call.kwargs["json"]
-        assert body["model"] == "Seedance2.0"
+        assert body["model"] == "seedance-2-0-260128"
         assert body["duration"] == 5  # int, 不转 str
         assert body["ratio"] == "9:16"
         assert body["watermark"] is False

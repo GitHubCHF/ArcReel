@@ -7,7 +7,7 @@
   - text item ``{type:text, text}`` 必有至少一个
   - 首帧 ``{type:image_url, image_url:{url}, role:first_frame}``,可选尾帧 ``role:last_frame``
   - 参考图 ``{type:image_url, image_url:{url}, role:reference_image}`` 可多张
-- 请求体含 ``model`` 字段(Seedance2.0);``duration`` 为 int(4~15);``seed`` 可选
+- 请求体含 ``model`` 字段(seedance-2-0-260128);``duration`` 为 int(4~15);``seed`` 可选
 - 图片是 URL:本地图先上传到阿里云 OSS(见 ``lib/oss_uploader``)换签名 URL。OSS 配置缺失时
   图生/参考生视频 fail-loud(文生视频不受影响)。
 - 参考图走网关资产库过审(Ark Action 风格 ``POST /api/ark?Action=CreateAsset&Version=...``),
@@ -57,7 +57,7 @@ from lib.video_backends.base import (
 logger = logging.getLogger(__name__)
 
 # 缺省 model（未显式指定时下传给网关 API）；大小写敏感，须与 registry key 一致。
-DEFAULT_MODEL = "Seedance2.0"
+DEFAULT_MODEL = "seedance-2-0-260128"
 DEFAULT_BASE_URL = "https://api.tcgateway.top"
 
 _TASKS_PATH = "/api/v3/contents/generations/tasks"

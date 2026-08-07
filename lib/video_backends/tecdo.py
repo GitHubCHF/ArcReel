@@ -365,10 +365,10 @@ class TecDoVideoBackend:
             json=payload,
             headers=self._json_headers(),
         )
+        # 先打原始报文再 raise:4xx/5xx 时 raise_for_status 会抛,错误 body 才是排障关键。
+        logger.info("钛动 Action=%s 响应: status=%s body=%s", action, resp.status_code, resp.text)
         resp.raise_for_status()
-        body = resp.json()
-        logger.info("钛动 Action=%s 响应: %s", action, body)
-        return body
+        return resp.json()
 
     async def _get_cached_asset(self, content_hash: str) -> str | None:
         """查持久化缓存:返回 Active 资产的 assetId,否则 None(含无 DB 时)。"""
@@ -423,9 +423,9 @@ class TecDoVideoBackend:
             json=payload,
             headers=self._json_headers(),
         )
+        logger.info("钛动创建任务响应: status=%s body=%s", resp.status_code, resp.text)
         resp.raise_for_status()
         body = resp.json()
-        logger.info("钛动创建任务响应: %s", body)
         task_id = body.get("id")
         if not task_id:
             raise RuntimeError(f"钛动创建任务返回体缺少 id: {body}")
@@ -436,6 +436,8 @@ class TecDoVideoBackend:
             f"{self._base_url}{_TASKS_PATH}/{task_id}",
             headers=self._json_headers(),
         )
+        if resp.status_code >= 400:
+            logger.info("钛动查询任务错误响应: status=%s body=%s", resp.status_code, resp.text)
         resp.raise_for_status()
         return resp.json()
 

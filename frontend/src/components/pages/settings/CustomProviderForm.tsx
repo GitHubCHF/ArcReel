@@ -91,6 +91,11 @@ function discoveredToRow(m: DiscoveredModel): ModelRow {
   });
 }
 
+// 已勾选(启用)的排在前面；同组内保持原有相对顺序(Array.sort 稳定)。
+function sortEnabledFirst(rows: ModelRow[]): ModelRow[] {
+  return [...rows].sort((a, b) => Number(b.is_enabled) - Number(a.is_enabled));
+}
+
 function existingToRow(m: CustomProviderInfo["models"][number]): ModelRow {
   return newModelRow({
     model_id: m.model_id,
@@ -224,7 +229,7 @@ export function CustomProviderForm({ existing, onSaved, onCancel }: CustomProvid
   const [apiKey, setApiKey] = useState("");
   const [showApiKey, setShowApiKey] = useState(false);
   const [models, setModels] = useState<ModelRow[]>(
-    existing ? existing.models.map(existingToRow) : [],
+    existing ? sortEnabledFirst(existing.models.map(existingToRow)) : [],
   );
 
   // --- Loading / status ---
@@ -275,17 +280,20 @@ export function CustomProviderForm({ existing, onSaved, onCancel }: CustomProvid
         for (const d of discovered) {
           const existing = existingIds.get(d.model_id);
           if (existing) {
+            // 已存在的模型:保留用户既有勾选/默认/价格等状态,发现结果不覆盖
             merged.push(existing);
             existingIds.delete(d.model_id);
           } else {
-            merged.push(d);
+            // 新发现的模型:默认不勾选、不设为默认,由用户手动启用(避免每次拉取都全选)
+            merged.push({ ...d, is_enabled: false, is_default: false });
           }
         }
         // Keep manually added models that weren't in the discovery response
         for (const r of existingIds.values()) {
           merged.push(r);
         }
-        return merged;
+        // 已勾选(老的已启用)的前置,便于用户在长列表里先看到自己的选择
+        return sortEnabledFirst(merged);
       });
       setModelFilter("");
     } catch (e) {
@@ -551,18 +559,16 @@ export function CustomProviderForm({ existing, onSaved, onCancel }: CustomProvid
                 </button>
               )}
             </div>
-            {models.length > 5 && (
-              <div className="relative mb-2">
-                <Search className="pointer-events-none absolute left-2.5 top-1/2 h-3.5 w-3.5 -translate-y-1/2 text-text-4" />
-                <input
-                  type="text"
-                  value={modelFilter}
-                  onChange={(e) => setModelFilter(e.target.value)}
-                  placeholder={t("search_models")}
-                  className={`${INPUT_CLS} py-1.5 pl-8 pr-3 text-[12px]`}
-                />
-              </div>
-            )}
+            <div className="relative mb-2">
+              <Search className="pointer-events-none absolute left-2.5 top-1/2 h-3.5 w-3.5 -translate-y-1/2 text-text-4" />
+              <input
+                type="text"
+                value={modelFilter}
+                onChange={(e) => setModelFilter(e.target.value)}
+                placeholder={t("search_models")}
+                className={`${INPUT_CLS} py-1.5 pl-8 pr-3 text-[12px]`}
+              />
+            </div>
             <div className="space-y-2">
               {filteredModels.map((m) => {
                 const pl = priceLabel(m.endpoint, endpointToMediaType, t);

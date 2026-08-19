@@ -24,6 +24,7 @@ from datetime import UTC
 # 不触发。lease_ttl 默认 10s → 阈值 30s。常量化便于单测注入与未来调参。
 _ORPHAN_RESCAN_LEASE_LOST_MULT = 3
 
+from lib.error_format import describe_exception
 from lib.generation_queue import (
     TASK_POLL_INTERVAL_SEC,
     TASK_WORKER_HEARTBEAT_SEC,
@@ -614,7 +615,7 @@ class GenerationWorker:
             raise
         except Exception as exc:
             logger.exception("任务失败 %s (type=%s, provider=%s)", task_id, task_type, provider_id)
-            rows = await asyncio.shield(self.queue.mark_task_failed(task_id, str(exc)))
+            rows = await asyncio.shield(self.queue.mark_task_failed(task_id, describe_exception(exc)))
             if rows == 0:
                 # 外部已抢先翻 cancelling → 落地 cancelled 终态
                 await asyncio.shield(self.queue.mark_task_cancelled(task_id, cancelled_by="user"))
@@ -703,7 +704,7 @@ class GenerationWorker:
             return
         except Exception as exc:
             logger.exception("resume 失败 %s (type=%s, provider=%s)", task_id, task_type, provider_id)
-            rows = await asyncio.shield(self.queue.mark_task_failed(task_id, str(exc)))
+            rows = await asyncio.shield(self.queue.mark_task_failed(task_id, describe_exception(exc)))
             if rows == 0:
                 await asyncio.shield(self.queue.mark_task_cancelled(task_id, cancelled_by="user"))
             return

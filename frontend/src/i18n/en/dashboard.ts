@@ -818,6 +818,7 @@ export default {
   'endpoint_vidu_video_display': 'Vidu Video',
   'endpoint_dashscope_image_display': 'Alibaba Model Studio (Image)',
   'endpoint_dashscope_async_video_display': 'Alibaba Model Studio (Async Video)',
+  'endpoint_modelverse_mj_image_display': 'ModelVerse Image (Midjourney)',
   'endpoint_openai_tts_display': 'OpenAI Speech (TTS)',
   'endpoint_catalog_loading': 'Loading endpoint catalog…',
   // Image Capability

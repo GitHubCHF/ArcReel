@@ -30,6 +30,7 @@ class TestRegistry:
             "vidu-video",
             "dashscope-image",
             "dashscope-async-video",
+            "modelverse-mj-image",
             "openai-tts",
         }
 
@@ -37,7 +38,7 @@ class TestRegistry:
         for key, spec in ENDPOINT_REGISTRY.items():
             assert spec.key == key
             assert spec.media_type in {"text", "image", "video", "audio"}
-            assert spec.family in {"openai", "google", "newapi", "v2", "ark", "vidu", "dashscope"}
+            assert spec.family in {"openai", "google", "newapi", "v2", "ark", "vidu", "dashscope", "modelverse"}
             assert spec.display_name_key.startswith("endpoint_")
             assert callable(spec.build_backend)
             assert spec.request_method == "POST"
@@ -141,6 +142,7 @@ class TestRegistry:
             "openai-images-edits",
             "gemini-image",
             "dashscope-image",
+            "modelverse-mj-image",
         }
         assert video_keys == {
             "openai-video",
@@ -189,6 +191,11 @@ class TestInferEndpoint:
             ("gemini-2.5-flash-image", "google", "gemini-image"),
             ("gemini-2.0-flash-exp-image-generation", "openai", "gemini-image"),
             ("gemini-3-pro-image-preview", "openai", "gemini-image"),
+            # ── Midjourney(ModelVerse 异步任务 API)先于其它启发式拦截 ──
+            ("midjourney-fast-imagine", "openai", "modelverse-mj-image"),
+            ("midjourney-fast-upscale", "openai", "modelverse-mj-image"),
+            ("midjourney-relax-imagine", "openai", "modelverse-mj-image"),
+            ("midjourney-fast-imagine", "google", "modelverse-mj-image"),
             # ── 新视频分支路由 ──
             ("seedance-1.0", "openai", "ark-seedance"),
             ("doubao-seedance-2-0", "openai", "ark-seedance"),
@@ -269,6 +276,7 @@ def test_image_endpoint_registry_entries():
         "openai-images-edits",
         "gemini-image",
         "dashscope-image",
+        "modelverse-mj-image",
     }
 
 

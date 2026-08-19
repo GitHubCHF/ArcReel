@@ -25,6 +25,7 @@ from lib.custom_provider.backends import (
 from lib.image_backends.base import ImageCapability
 from lib.image_backends.dashscope import DashScopeImageBackend
 from lib.image_backends.gemini import GeminiImageBackend
+from lib.image_backends.modelverse_mj import ModelVerseMidjourneyImageBackend
 from lib.image_backends.openai import OpenAIImageBackend
 from lib.text_backends.gemini import GeminiTextBackend
 from lib.text_backends.openai import OpenAITextBackend
@@ -192,6 +193,16 @@ def _build_dashscope_async_video(provider, model_id: str) -> CustomVideoBackend:
     return CustomVideoBackend(provider_id=provider.provider_id, delegate=delegate, model=model_id)
 
 
+def _build_modelverse_mj_image(provider, model_id: str) -> CustomImageBackend:
+    delegate = ModelVerseMidjourneyImageBackend(
+        api_key=provider.api_key,
+        base_url=provider.base_url,
+        model=model_id,
+        provider_name=provider.provider_id,
+    )
+    return CustomImageBackend(provider_id=provider.provider_id, delegate=delegate, model=model_id)
+
+
 # ── ENDPOINT_REGISTRY 注册表 ───────────────────────────────────────
 
 
@@ -326,6 +337,18 @@ ENDPOINT_REGISTRY: dict[str, EndpointSpec] = {
         request_path_template="/v1/audio/speech",
         build_backend=_build_openai_tts,
     ),
+    "modelverse-mj-image": EndpointSpec(
+        key="modelverse-mj-image",
+        media_type="image",
+        family="modelverse",
+        display_name_key="endpoint_modelverse_mj_image_display",
+        request_method="POST",
+        # 异步任务端点:submit 提交 + status 轮询;此处展示提交路径
+        request_path_template="/v1/tasks/submit",
+        # imagine 仅文生图(默认自动 U1 放大出单图);不支持参考图
+        image_capabilities=frozenset({ImageCapability.TEXT_TO_IMAGE}),
+        build_backend=_build_modelverse_mj_image,
+    ),
     "dashscope-async-video": EndpointSpec(
         key="dashscope-async-video",
         media_type="video",
@@ -446,6 +469,7 @@ def infer_endpoint(model_id: str, discovery_format: str) -> str:
     列表常夹带 gemini-*/imagen-* 原生 id，必须按内容纠偏到 Google 端点，否则被错推到
     openai-chat/openai-images，每次都要手动改回。
 
+    0) Midjourney（midjourney-*）→ "modelverse-mj-image"（ModelVerse 异步任务 API，最先拦截）
     1) 阿里百炼视频 → happyhorse / wan2.x（非 image）走 "dashscope-async-video"（原生异步端点）。
        happyhorse 不在 _VIDEO_PATTERN 须显式；wan2.x 视频抢在通用 is_video 前拦截。图像不自动推
        dashscope（中转可能是 OpenAI 兼容），qwen-image / wan2.x-image 落到既有图像家族推断。
@@ -459,6 +483,11 @@ def infer_endpoint(model_id: str, discovery_format: str) -> str:
     """
     lowered = model_id.lower()
     is_image = bool(_IMAGE_PATTERN.search(model_id))
+
+    # Midjourney(ModelVerse 异步任务 API)先于其它启发式拦截:imagine/upscale/variation/reroll
+    # 都归到 modelverse-mj-image 端点(model id 不含 image/video 关键字,否则会被误推到文本端点)
+    if "midjourney" in lowered:
+        return "modelverse-mj-image"
 
     # 阿里百炼视频先于通用 is_video 拦截到原生异步端点
     if "happyhorse" in lowered:

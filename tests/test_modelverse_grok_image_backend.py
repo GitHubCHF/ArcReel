@@ -58,7 +58,10 @@ async def test_t2i_posts_generations_and_downloads(tmp_path: Path):
     assert payload == {"model": "grok-imagine-image", "prompt": "a cat", "n": 1, "size": "2k", "aspect_ratio": "9:16"}
     assert result.image_uri == "https://x/out.png"
     assert result.provider == "modelverse"
-    dl.assert_awaited_once_with("https://x/out.png", result.image_path)
+    # url 下载带浏览器 UA 头,规避 xAI imgen CDN 对 python-httpx 的 403
+    dl.assert_awaited_once()
+    assert dl.await_args.args[0] == "https://x/out.png"
+    assert "User-Agent" in dl.await_args.kwargs["headers"]
 
 
 async def test_size_maps_to_1k_when_requested(tmp_path: Path):

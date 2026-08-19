@@ -23,10 +23,20 @@ def image_to_base64_data_uri(image_path: Path) -> str:
     return f"data:{mime_type};base64,{b64}"
 
 
-async def download_image_to_path(url: str, output_path: Path, *, timeout: int = 60) -> None:
-    """从 URL 异步下载图片到本地文件。"""
+async def download_image_to_path(
+    url: str, output_path: Path, *, timeout: int = 60, headers: dict[str, str] | None = None
+) -> None:
+    """从 URL 异步下载图片到本地文件。
+
+    headers 可选：部分第三方图片 CDN（如 xAI imgen）会挡默认 python-httpx UA 返回 403，
+    调用方可传浏览器 UA 等头绕过。
+    """
     async with httpx.AsyncClient() as client:
-        resp = await client.get(url, timeout=timeout)
+        # 仅在调用方显式传 headers 时附加，保持既有调用方的请求签名不变
+        get_kwargs: dict = {"timeout": timeout}
+        if headers is not None:
+            get_kwargs["headers"] = headers
+        resp = await client.get(url, **get_kwargs)
         resp.raise_for_status()
         content = resp.content
 

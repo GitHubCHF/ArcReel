@@ -53,6 +53,15 @@ _MAX_REFERENCE_IMAGES = 8
 # 单张图 HTTP 超时;Grok Imagine 同步返回但 2k 出图仍可能几十秒。
 _HTTP_TIMEOUT = 180.0
 
+# Grok 结果 url 落在 xAI imgen CDN(imgen.x.ai),对默认 python-httpx UA 返回 403(浏览器可访问),
+# 故下载时带浏览器 UA 绕过 CDN 拦截。
+_BROWSER_HEADERS = {
+    "User-Agent": (
+        "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 "
+        "(KHTML, like Gecko) Chrome/126.0 Safari/537.36"
+    )
+}
+
 
 def _normalize_base_url(base_url: str | None) -> str:
     """容忍 host-only / 尾斜杠 / 误带 ``/v1``,统一为不带路径的 base;由本后端补 ``/v1/images/*``。"""
@@ -181,7 +190,7 @@ class ModelVerseGrokImageBackend:
         """从 ``data[0]`` 落盘:优先 url 下载,其次 b64_json 解码。"""
         url = item.get("url")
         if url:
-            await download_image_to_path(url, output_path)
+            await download_image_to_path(url, output_path, headers=_BROWSER_HEADERS)
             return
         b64 = item.get("b64_json")
         if b64:

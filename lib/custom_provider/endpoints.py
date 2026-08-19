@@ -25,6 +25,7 @@ from lib.custom_provider.backends import (
 from lib.image_backends.base import ImageCapability
 from lib.image_backends.dashscope import DashScopeImageBackend
 from lib.image_backends.gemini import GeminiImageBackend
+from lib.image_backends.modelverse_grok import ModelVerseGrokImageBackend
 from lib.image_backends.modelverse_mj import ModelVerseMidjourneyImageBackend
 from lib.image_backends.openai import OpenAIImageBackend
 from lib.text_backends.gemini import GeminiTextBackend
@@ -203,6 +204,16 @@ def _build_modelverse_mj_image(provider, model_id: str) -> CustomImageBackend:
     return CustomImageBackend(provider_id=provider.provider_id, delegate=delegate, model=model_id)
 
 
+def _build_modelverse_grok_image(provider, model_id: str) -> CustomImageBackend:
+    delegate = ModelVerseGrokImageBackend(
+        api_key=provider.api_key,
+        base_url=provider.base_url,
+        model=model_id,
+        provider_name=provider.provider_id,
+    )
+    return CustomImageBackend(provider_id=provider.provider_id, delegate=delegate, model=model_id)
+
+
 # ── ENDPOINT_REGISTRY 注册表 ───────────────────────────────────────
 
 
@@ -349,6 +360,17 @@ ENDPOINT_REGISTRY: dict[str, EndpointSpec] = {
         image_capabilities=frozenset({ImageCapability.TEXT_TO_IMAGE}),
         build_backend=_build_modelverse_mj_image,
     ),
+    "modelverse-grok-image": EndpointSpec(
+        key="modelverse-grok-image",
+        media_type="image",
+        family="modelverse",
+        display_name_key="endpoint_modelverse_grok_image_display",
+        request_method="POST",
+        # 同步 OpenAI 风格:文生图 /v1/images/generations、图生图 /v1/images/edits
+        request_path_template="/v1/images/{generations,edits}",
+        image_capabilities=frozenset({ImageCapability.TEXT_TO_IMAGE, ImageCapability.IMAGE_TO_IMAGE}),
+        build_backend=_build_modelverse_grok_image,
+    ),
     "dashscope-async-video": EndpointSpec(
         key="dashscope-async-video",
         media_type="video",
@@ -469,7 +491,8 @@ def infer_endpoint(model_id: str, discovery_format: str) -> str:
     列表常夹带 gemini-*/imagen-* 原生 id，必须按内容纠偏到 Google 端点，否则被错推到
     openai-chat/openai-images，每次都要手动改回。
 
-    0) Midjourney（midjourney-*）→ "modelverse-mj-image"（ModelVerse 异步任务 API，最先拦截）
+    0) Midjourney（midjourney-*）→ "modelverse-mj-image"；Grok Imagine（grok-imagine-image*）→
+       "modelverse-grok-image"（均为 ModelVerse 专属参数形态，最先拦截）
     1) 阿里百炼视频 → happyhorse / wan2.x（非 image）走 "dashscope-async-video"（原生异步端点）。
        happyhorse 不在 _VIDEO_PATTERN 须显式；wan2.x 视频抢在通用 is_video 前拦截。图像不自动推
        dashscope（中转可能是 OpenAI 兼容），qwen-image / wan2.x-image 落到既有图像家族推断。
@@ -488,6 +511,11 @@ def infer_endpoint(model_id: str, discovery_format: str) -> str:
     # 都归到 modelverse-mj-image 端点(model id 不含 image/video 关键字,否则会被误推到文本端点)
     if "midjourney" in lowered:
         return "modelverse-mj-image"
+
+    # Grok Imagine(ModelVerse 上标准 OpenAI 图像协议,含独立 aspect_ratio / 1k-2k size)。
+    # 精确匹配 grok-imagine-image[-quality],不误伤 grok-imagine-video。
+    if "grok-imagine-image" in lowered:
+        return "modelverse-grok-image"
 
     # 阿里百炼视频先于通用 is_video 拦截到原生异步端点
     if "happyhorse" in lowered:

@@ -819,6 +819,7 @@ export default {
   'endpoint_dashscope_image_display': 'Alibaba Model Studio (Image)',
   'endpoint_dashscope_async_video_display': 'Alibaba Model Studio (Async Video)',
   'endpoint_modelverse_mj_image_display': 'ModelVerse Image (Midjourney)',
+  'endpoint_modelverse_grok_image_display': 'ModelVerse Image (Grok Imagine)',
   'endpoint_openai_tts_display': 'OpenAI Speech (TTS)',
   'endpoint_catalog_loading': 'Loading endpoint catalog…',
   // Image Capability

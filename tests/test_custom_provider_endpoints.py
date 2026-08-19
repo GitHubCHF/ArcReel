@@ -31,6 +31,7 @@ class TestRegistry:
             "dashscope-image",
             "dashscope-async-video",
             "modelverse-mj-image",
+            "modelverse-grok-image",
             "openai-tts",
         }
 
@@ -143,6 +144,7 @@ class TestRegistry:
             "gemini-image",
             "dashscope-image",
             "modelverse-mj-image",
+            "modelverse-grok-image",
         }
         assert video_keys == {
             "openai-video",
@@ -196,6 +198,10 @@ class TestInferEndpoint:
             ("midjourney-fast-upscale", "openai", "modelverse-mj-image"),
             ("midjourney-relax-imagine", "openai", "modelverse-mj-image"),
             ("midjourney-fast-imagine", "google", "modelverse-mj-image"),
+            # ── Grok Imagine(ModelVerse OpenAI 图像协议)──
+            ("grok-imagine-image", "openai", "modelverse-grok-image"),
+            ("grok-imagine-image-quality", "openai", "modelverse-grok-image"),
+            ("grok-imagine-image", "google", "modelverse-grok-image"),
             # ── 新视频分支路由 ──
             ("seedance-1.0", "openai", "ark-seedance"),
             ("doubao-seedance-2-0", "openai", "ark-seedance"),
@@ -277,6 +283,7 @@ def test_image_endpoint_registry_entries():
         "gemini-image",
         "dashscope-image",
         "modelverse-mj-image",
+        "modelverse-grok-image",
     }
 
 

@@ -820,6 +820,7 @@ export default {
   'endpoint_dashscope_image_display': '阿里百炼（图片）',
   'endpoint_dashscope_async_video_display': '阿里百炼（异步视频）',
   'endpoint_modelverse_mj_image_display': 'ModelVerse 图片 (Midjourney)',
+  'endpoint_modelverse_grok_image_display': 'ModelVerse 图片 (Grok Imagine)',
   'endpoint_openai_tts_display': 'OpenAI 语音合成 (TTS)',
   'endpoint_catalog_loading': '加载端点目录…',
   // Image Capability

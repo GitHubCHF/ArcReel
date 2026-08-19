@@ -1,4 +1,4 @@
-import { useState, useEffect, useCallback, type CSSProperties } from "react";
+import { useState, useEffect, useCallback, useMemo, type CSSProperties } from "react";
 import { Loader2, Pencil, Trash2, CheckCircle2, XCircle } from "lucide-react";
 import { useTranslation } from "react-i18next";
 import { API } from "@/api";
@@ -45,6 +45,11 @@ export function CustomProviderDetail({ providerId, onDeleted, onSaved }: CustomP
     void fetchEndpointCatalog();
   }, [fetchEndpointCatalog]);
   const [provider, setProvider] = useState<CustomProviderInfo | null>(null);
+  // 已启用的模型排最前(稳定排序,同组保持原顺序),与编辑表单口径一致
+  const sortedModels = useMemo(
+    () => (provider ? [...provider.models].sort((a, b) => Number(b.is_enabled) - Number(a.is_enabled)) : []),
+    [provider],
+  );
   const [loading, setLoading] = useState(true);
   const [editing, setEditing] = useState(false);
   const [deleting, setDeleting] = useState(false);
@@ -209,7 +214,7 @@ export function CustomProviderDetail({ providerId, onDeleted, onSaved }: CustomP
                 {t("model_list")}
               </div>
               <div className="space-y-1.5">
-                {provider.models.map((m) => (
+                {sortedModels.map((m) => (
                   <div
                     key={m.id}
                     className={`flex items-center gap-2 rounded-[8px] border border-hairline px-3 py-2 text-[12.5px] ${

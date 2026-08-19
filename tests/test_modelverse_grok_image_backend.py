@@ -55,7 +55,14 @@ async def test_t2i_posts_generations_and_downloads(tmp_path: Path):
 
     url, payload = client.post.await_args.args[0], client.post.await_args.kwargs["json"]
     assert url.endswith("/v1/images/generations")
-    assert payload == {"model": "grok-imagine-image", "prompt": "a cat", "n": 1, "size": "2k", "aspect_ratio": "9:16"}
+    assert payload == {
+        "model": "grok-imagine-image",
+        "prompt": "a cat",
+        "n": 1,
+        "size": "2k",
+        "aspect_ratio": "9:16",
+        "response_format": "b64_json",
+    }
     assert result.image_uri == "https://x/out.png"
     assert result.provider == "modelverse"
     # url 下载带浏览器 UA 头,规避 xAI imgen CDN 对 python-httpx 的 403
@@ -127,6 +134,20 @@ async def test_b64_json_response_saved(tmp_path: Path):
         result = await _backend().generate(ImageGenerationRequest(prompt="x", output_path=out))
     assert out.read_bytes() == b"fakebytes"
     assert result.image_uri is None
+
+
+async def test_b64_preferred_over_url_when_both_present(tmp_path: Path):
+    """同时返回 b64_json 与 url 时优先用 b64,绝不去 fetch 会 403 的 xAI CDN url。"""
+    b64 = base64.b64encode(b"inlinebytes").decode()
+    client = _mock_client(_resp([{"b64_json": b64, "url": "https://imgen.x.ai/blocked.png"}]))
+    out = tmp_path / "out.png"
+    with (
+        patch("lib.image_backends.modelverse_grok.httpx.AsyncClient", return_value=client),
+        patch("lib.image_backends.modelverse_grok.download_image_to_path", new=AsyncMock()) as dl,
+    ):
+        await _backend().generate(ImageGenerationRequest(prompt="x", output_path=out))
+    assert out.read_bytes() == b"inlinebytes"
+    dl.assert_not_awaited()  # 没有触碰 url 下载
 
 
 async def test_empty_data_raises(tmp_path: Path):

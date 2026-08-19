@@ -53,8 +53,11 @@ _MAX_REFERENCE_IMAGES = 8
 # 单张图 HTTP 超时;Grok Imagine 同步返回但 2k 出图仍可能几十秒。
 _HTTP_TIMEOUT = 180.0
 
-# Grok 结果 url 落在 xAI imgen CDN(imgen.x.ai),对默认 python-httpx UA 返回 403(浏览器可访问),
-# 故下载时带浏览器 UA 绕过 CDN 拦截。
+# 让 ModelVerse 把图以 base64 内联返回:Grok 结果 url 落在 xAI imgen CDN(imgen.x.ai),服务端
+# 直取被挡 403(不止查 UA)。请求 b64_json 从已鉴权的 ModelVerse 响应直接拿字节,彻底不碰 CDN。
+_RESPONSE_FORMAT = "b64_json"
+
+# url 兜底下载(relay 忽略 response_format 仍只回 url 时)带浏览器 UA 尽力一试。
 _BROWSER_HEADERS = {
     "User-Agent": (
         "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 "
@@ -159,6 +162,7 @@ class ModelVerseGrokImageBackend:
             "n": 1,
             "size": _map_size(request.image_size),
             "aspect_ratio": _validate_aspect_ratio(request.aspect_ratio),
+            "response_format": _RESPONSE_FORMAT,
         }
         return _GENERATIONS_PATH, payload
 
@@ -178,6 +182,7 @@ class ModelVerseGrokImageBackend:
             "n": 1,
             "size": _map_size(request.image_size),
             "aspect_ratio": _validate_aspect_ratio(request.aspect_ratio),
+            "response_format": _RESPONSE_FORMAT,
         }
         # 单图用 image、多图用 images(与文档一致,二者互斥)
         if len(data_uris) == 1:
@@ -187,11 +192,7 @@ class ModelVerseGrokImageBackend:
         return _EDITS_PATH, payload
 
     async def _save_item(self, item: dict, output_path: Path) -> None:
-        """从 ``data[0]`` 落盘:优先 url 下载,其次 b64_json 解码。"""
-        url = item.get("url")
-        if url:
-            await download_image_to_path(url, output_path, headers=_BROWSER_HEADERS)
-            return
+        """从 ``data[0]`` 落盘:优先 b64_json 内联字节(我们请求的就是它,绕开 CDN),其次 url 兜底下载。"""
         b64 = item.get("b64_json")
         if b64:
 
@@ -201,7 +202,12 @@ class ModelVerseGrokImageBackend:
 
             await asyncio.to_thread(_decode_and_save)
             return
-        raise RuntimeError(f"ModelVerse Grok 图片响应项既无 url 也无 b64_json: {item}")
+        url = item.get("url")
+        if url:
+            # relay 忽略 response_format 只回 url 时的兜底:带浏览器 UA 尽力下载
+            await download_image_to_path(url, output_path, headers=_BROWSER_HEADERS)
+            return
+        raise RuntimeError(f"ModelVerse Grok 图片响应项既无 b64_json 也无 url: {item}")
 
     def _headers(self) -> dict[str, str]:
         return {"Authorization": f"Bearer {self._api_key}", "Content-Type": "application/json"}

@@ -130,6 +130,9 @@ export function ProjectSettingsPage() {
   const [customProviders, setCustomProviders] = useState<CustomProviderInfo[]>([]);
   const [projectTitle, setProjectTitle] = useState<string>("");
   const [contentMode, setContentMode] = useState<string>("narration");
+  const [includePromptLayout, setIncludePromptLayout] = useState<boolean>(true);
+  const [includePromptGuard, setIncludePromptGuard] = useState<boolean>(true);
+  const [includePromptNegative, setIncludePromptNegative] = useState<boolean>(true);
   const [saving, setSaving] = useState(false);
 
   // ── Style picker state (independent save flow) ─────────────────────────────
@@ -142,6 +145,7 @@ export function ProjectSettingsPage() {
     defaultDuration: null as number | null,
     videoResolution: null as string | null,
     imageResolution: null as string | null,
+    includePromptLayout: true, includePromptGuard: true, includePromptNegative: true,
   });
   // 风格区独立保存，但"未保存就离开"也需被 isDirty 拦截。
   const initialStyleRef = useRef<StylePickerValue | null>(null);
@@ -210,6 +214,9 @@ export function ProjectSettingsPage() {
       setDefaultDuration(dd);
       setProjectTitle(typeof project.title === "string" ? project.title : "");
       setContentMode(typeof project.content_mode === "string" ? project.content_mode : "narration");
+      setIncludePromptLayout(project.include_prompt_layout !== false);
+      setIncludePromptGuard(project.include_prompt_guard !== false);
+      setIncludePromptNegative(project.include_prompt_negative !== false);
 
       // model_settings 的 key 以 effective backend（override ‖ global default）读写，
       // 与 handleSave 保持一致；legacy video_model_settings 作为旧项目兼容回退。
@@ -240,6 +247,9 @@ export function ProjectSettingsPage() {
         textScript: ts, textOverview: to, textStyle: tst,
         aspectRatio: ar, generationMode: gm, defaultDuration: dd,
         videoResolution: vRes, imageResolution: iRes,
+        includePromptLayout: project.include_prompt_layout !== false,
+        includePromptGuard: project.include_prompt_guard !== false,
+        includePromptNegative: project.include_prompt_negative !== false,
       };
     }));
 
@@ -290,6 +300,9 @@ export function ProjectSettingsPage() {
     defaultDuration !== initialRef.current.defaultDuration ||
     videoResolution !== initialRef.current.videoResolution ||
     imageResolution !== initialRef.current.imageResolution ||
+    includePromptLayout !== initialRef.current.includePromptLayout ||
+    includePromptGuard !== initialRef.current.includePromptGuard ||
+    includePromptNegative !== initialRef.current.includePromptNegative ||
     styleIsDirty;
   /* eslint-enable react-hooks/refs */
 
@@ -389,6 +402,9 @@ export function ProjectSettingsPage() {
         // ad 项目禁写 default_duration（后端对字段出现本身返回 400），省略该键
         ...(contentMode === "ad" ? {} : { default_duration: defaultDuration }),
         model_settings: newModelSettings,
+        include_prompt_layout: includePromptLayout,
+        include_prompt_guard: includePromptGuard,
+        include_prompt_negative: includePromptNegative,
       });
       setModelSettings(newModelSettings);
       initialRef.current = {
@@ -396,6 +412,7 @@ export function ProjectSettingsPage() {
         textScript, textOverview, textStyle,
         aspectRatio, generationMode, defaultDuration,
         videoResolution, imageResolution,
+        includePromptLayout, includePromptGuard, includePromptNegative,
       };
       useAppStore.getState().pushToast(t("saved"), "success");
     } catch (e: unknown) {
@@ -403,7 +420,7 @@ export function ProjectSettingsPage() {
     } finally {
       setSaving(false);
     }
-  }, [modelSettings, videoBackend, imageBackendT2I, imageBackendI2I, audioOverride, textScript, textOverview, textStyle, aspectRatio, generationMode, defaultDuration, contentMode, videoResolution, imageResolution, projectName, t, globalDefaults.video, globalDefaults.imageT2I]);
+  }, [modelSettings, videoBackend, imageBackendT2I, imageBackendI2I, audioOverride, textScript, textOverview, textStyle, aspectRatio, generationMode, defaultDuration, contentMode, videoResolution, imageResolution, includePromptLayout, includePromptGuard, includePromptNegative, projectName, t, globalDefaults.video, globalDefaults.imageT2I]);
 
   return (
     <div
@@ -660,6 +677,39 @@ export function ProjectSettingsPage() {
                     {t("disabled_label")}
                   </label>
                 </fieldset>
+              </SectionCard>
+
+              {/* Prompt generation helpers */}
+              <SectionCard kicker="Prompt Helpers" title="生成提示词辅助" description="控制生成资产（角色/场景/道具）图片时的提示词构成">
+                <div className="space-y-3">
+                  <label className="flex items-center gap-3 text-[12.5px] text-text-2 cursor-pointer">
+                    <input
+                      type="checkbox"
+                      checked={includePromptLayout}
+                      onChange={(e) => setIncludePromptLayout(e.target.checked)}
+                      className="w-4 h-4 accent-[oklch(0.76_0.09_295)] cursor-pointer"
+                    />
+                    <span>包含布局指导（16:9 四格布局等）</span>
+                  </label>
+                  <label className="flex items-center gap-3 text-[12.5px] text-text-2 cursor-pointer">
+                    <input
+                      type="checkbox"
+                      checked={includePromptGuard}
+                      onChange={(e) => setIncludePromptGuard(e.target.checked)}
+                      className="w-4 h-4 accent-[oklch(0.76_0.09_295)] cursor-pointer"
+                    />
+                    <span>包含防崩说明（五官对称、手指完整等）</span>
+                  </label>
+                  <label className="flex items-center gap-3 text-[12.5px] text-text-2 cursor-pointer">
+                    <input
+                      type="checkbox"
+                      checked={includePromptNegative}
+                      onChange={(e) => setIncludePromptNegative(e.target.checked)}
+                      className="w-4 h-4 accent-[oklch(0.76_0.09_295)] cursor-pointer"
+                    />
+                    <span>包含反向提示词（画面避免：水印、低分辨率等）</span>
+                  </label>
+                </div>
               </SectionCard>
             </>
           )}

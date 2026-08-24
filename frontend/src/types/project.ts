@@ -149,6 +149,12 @@ export interface ProjectData {
   model_settings?: Record<string, ModelSettingEntry>;
   /** Legacy field: keyed by model_id only (before composite key refactor). Read-only at UI layer. */
   video_model_settings?: Record<string, { resolution?: string | null }>;
+  /** 生成提示词时是否包含布局指导 */
+  include_prompt_layout?: boolean;
+  /** 生成提示词时是否包含防崩说明 */
+  include_prompt_guard?: boolean;
+  /** 生成提示词时是否包含反向提示词 */
+  include_prompt_negative?: boolean;
   metadata?: {
     created_at: string;
     updated_at: string;

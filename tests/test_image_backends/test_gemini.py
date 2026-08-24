@@ -175,6 +175,24 @@ class TestGenerate:
         with pytest.raises(RuntimeError, match="未返回图片"):
             await backend_aistudio.generate(request)
 
+    async def test_generate_none_parts_reports_reason(self, backend_aistudio, tmp_path):
+        """parts 为 None(安全拦截等)时应抛带原因的错误,而非 NoneType TypeError。"""
+        output_file = tmp_path / "out.png"
+
+        candidate = MagicMock()
+        candidate.finish_reason = MagicMock(name="IMAGE_SAFETY")
+        candidate.finish_reason.name = "IMAGE_SAFETY"
+        mock_response = MagicMock()
+        mock_response.parts = None
+        mock_response.candidates = [candidate]
+        mock_response.prompt_feedback = None
+        mock_response.text = "blocked by safety policy"
+        backend_aistudio._client.aio.models.generate_content = AsyncMock(return_value=mock_response)
+
+        request = ImageGenerationRequest(prompt="test", output_path=output_file)
+        with pytest.raises(RuntimeError, match="finish_reason=IMAGE_SAFETY"):
+            await backend_aistudio.generate(request)
+
 
 # ---------------------------------------------------------------------------
 # Tests: helper methods

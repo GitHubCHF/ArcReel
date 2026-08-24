@@ -58,43 +58,103 @@ def _style_prefix(style: str = "", style_description: str = "") -> str:
 # ---------------------------------------------------------------------------
 
 
-def build_character_prompt(name: str, description: str, style: str = "", style_description: str = "") -> str:
-    """角色设计图 prompt（issue #353 四视图 16:9）。"""
+def build_character_prompt(
+    name: str,
+    description: str,
+    style: str = "",
+    style_description: str = "",
+    include_layout: bool = True,
+    include_guard: bool = True,
+    include_negative: bool = True,
+) -> str:
+    """角色设计图 prompt（issue #353 四视图 16:9）。
+
+    Args:
+        name: 角色名称
+        description: 角色描述
+        style: 风格标签
+        style_description: 风格详细描述
+        include_layout: 是否包含布局指导
+        include_guard: 是否包含防崩说明
+        include_negative: 是否包含反向提示词
+    """
     style_block = _style_prefix(style, style_description)
-    return (
-        f"{style_block}"
-        f"角色「{name}」的设计参考图。\n\n"
-        f"{description}\n\n"
-        f"{_CHARACTER_LAYOUT}\n\n"
-        f"{_CHARACTER_GUARD}\n\n"
-        f"{_NEGATIVE_TAIL_ASSET}"
-    )
+    parts = [f"{style_block}角色「{name}」的设计参考图。\n\n{description}"]
+
+    if include_layout:
+        parts.append(f"{_CHARACTER_LAYOUT}")
+    if include_guard:
+        parts.append(f"{_CHARACTER_GUARD}")
+    if include_negative:
+        parts.append(f"{_NEGATIVE_TAIL_ASSET}")
+
+    return "\n\n".join(parts)
 
 
-def build_scene_prompt(name: str, description: str, style: str = "", style_description: str = "") -> str:
-    """场景设计图 prompt（主+细节）。"""
+def build_scene_prompt(
+    name: str,
+    description: str,
+    style: str = "",
+    style_description: str = "",
+    include_layout: bool = True,
+    include_guard: bool = True,
+    include_negative: bool = True,
+) -> str:
+    """场景设计图 prompt（主+细节）。
+
+    Args:
+        name: 场景名称
+        description: 场景描述
+        style: 风格标签
+        style_description: 风格详细描述
+        include_layout: 是否包含布局指导
+        include_guard: 是否包含防崩说明
+        include_negative: 是否包含反向提示词
+    """
     style_block = _style_prefix(style, style_description)
-    return (
-        f"{style_block}"
-        f"标志性场景「{name}」的视觉参考。\n\n"
-        f"{description}\n\n"
-        f"{_SCENE_LAYOUT}\n\n"
-        f"{_SCENE_GUARD}\n\n"
-        f"{_NEGATIVE_TAIL_ASSET}"
-    )
+    parts = [f"{style_block}标志性场景「{name}」的视觉参考。\n\n{description}"]
+
+    if include_layout:
+        parts.append(f"{_SCENE_LAYOUT}")
+    if include_guard:
+        parts.append(f"{_SCENE_GUARD}")
+    if include_negative:
+        parts.append(f"{_NEGATIVE_TAIL_ASSET}")
+
+    return "\n\n".join(parts)
 
 
-def build_prop_prompt(name: str, description: str, style: str = "", style_description: str = "") -> str:
-    """道具设计图 prompt（三视图）。"""
+def build_prop_prompt(
+    name: str,
+    description: str,
+    style: str = "",
+    style_description: str = "",
+    include_layout: bool = True,
+    include_guard: bool = True,
+    include_negative: bool = True,
+) -> str:
+    """道具设计图 prompt（三视图）。
+
+    Args:
+        name: 道具名称
+        description: 道具描述
+        style: 风格标签
+        style_description: 风格详细描述
+        include_layout: 是否包含布局指导
+        include_guard: 是否包含防崩说明
+        include_negative: 是否包含反向提示词
+    """
     style_block = _style_prefix(style, style_description)
-    return (
-        f"{style_block}"
-        f"道具「{name}」的多视角展示。\n\n"
-        f"{description}\n\n"
-        f"{_PROP_LAYOUT}\n\n"
-        f"{_PROP_GUARD}\n\n"
-        f"{_NEGATIVE_TAIL_ASSET}"
-    )
+    parts = [f"{style_block}道具「{name}」的多视角展示。\n\n{description}"]
+
+    if include_layout:
+        parts.append(f"{_PROP_LAYOUT}")
+    if include_guard:
+        parts.append(f"{_PROP_GUARD}")
+    if include_negative:
+        parts.append(f"{_NEGATIVE_TAIL_ASSET}")
+
+    return "\n\n".join(parts)
 
 
 def build_product_prompt(name: str, description: str, style: str = "", style_description: str = "") -> str:

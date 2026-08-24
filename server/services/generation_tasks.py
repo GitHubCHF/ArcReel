@@ -1168,7 +1168,19 @@ async def execute_character_task(
         _char_data = _project["characters"][resource_id]
         _style = _project.get("style", "")
         _style_desc = _project.get("style_description", "")
-        _full_prompt = build_character_prompt(resource_id, prompt, _style, _style_desc)
+        # 从项目配置读取是否包含提示词辅助（默认启用）
+        _include_layout = _project.get("include_prompt_layout", True)
+        _include_guard = _project.get("include_prompt_guard", True)
+        _include_negative = _project.get("include_prompt_negative", True)
+        _full_prompt = build_character_prompt(
+            resource_id,
+            prompt,
+            _style,
+            _style_desc,
+            include_layout=_include_layout,
+            include_guard=_include_guard,
+            include_negative=_include_negative,
+        )
         _ref_images = None
         _ref_path = _char_data.get("reference_image")
         if _ref_path:
@@ -1271,7 +1283,19 @@ async def execute_design_task(
             raise ValueError(f"{kind} not found: {resource_id}")
         style = project.get("style", "")
         style_desc = project.get("style_description", "")
-        full_prompt = prompt_builder(resource_id, prompt, style, style_desc)
+        # 从项目配置读取是否包含提示词辅助（默认启用）
+        include_layout = project.get("include_prompt_layout", True)
+        include_guard = project.get("include_prompt_guard", True)
+        include_negative = project.get("include_prompt_negative", True)
+        full_prompt = prompt_builder(
+            resource_id,
+            prompt,
+            style,
+            style_desc,
+            include_layout=include_layout,
+            include_guard=include_guard,
+            include_negative=include_negative,
+        )
         refs = reference_collector(project, project_path, resource_id) if reference_collector else None
         return project, full_prompt, refs
 

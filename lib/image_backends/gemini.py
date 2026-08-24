@@ -35,6 +35,33 @@ SKIP_NAME_PATTERNS = ("scene_", "storyboard_", "output_")
 DEFAULT_IMAGE_MODEL = "gemini-3.1-flash-image-preview"
 
 
+def _describe_missing_image(response) -> str:
+    """HTTP 成功但响应无图片 part 时,尽量拼出可诊断的原因(输入拦截 / finish_reason / 文本)。"""
+    details: list[str] = []
+
+    prompt_feedback = getattr(response, "prompt_feedback", None)
+    block_reason = getattr(prompt_feedback, "block_reason", None) if prompt_feedback is not None else None
+    if block_reason:
+        details.append(f"prompt_block={getattr(block_reason, 'name', block_reason)}")
+
+    candidates = getattr(response, "candidates", None) or []
+    if candidates:
+        finish_reason = getattr(candidates[0], "finish_reason", None)
+        if finish_reason:
+            details.append(f"finish_reason={getattr(finish_reason, 'name', finish_reason)}")
+
+    # 模型返回的说明文字常解释为何没出图(如安全策略);.text 在无文本时可能抛错,吞掉。
+    try:
+        text = getattr(response, "text", None)
+    except Exception:
+        text = None
+    if text:
+        details.append(f"text={text[:300]}")
+
+    suffix = f" ({'; '.join(details)})" if details else ""
+    return f"Gemini 未返回图片{suffix}"
+
+
 class GeminiImageBackend:
     """Gemini 图片生成后端，支持 AI Studio 和 Vertex AI。"""
 
@@ -136,6 +163,21 @@ class GeminiImageBackend:
             model=self._image_model, contents=contents, config=config
         )
 
+        # 诊断：打印完整响应
+        logger.info(
+            "Gemini API 原始响应: type=%s, response=%s",
+            type(response).__name__,
+            response,
+        )
+        if hasattr(response, "__dict__"):
+            logger.info("Gemini API 响应属性: %s", response.__dict__)
+        if hasattr(response, "parts"):
+            logger.info("Gemini API response.parts: %s", response.parts)
+        if hasattr(response, "prompt_feedback"):
+            logger.info("Gemini API prompt_feedback: %s", response.prompt_feedback)
+        if hasattr(response, "candidates"):
+            logger.info("Gemini API candidates: %s", response.candidates)
+
         # 5. 解析响应并保存
         self._process_image_response(response, request.output_path)
 
@@ -197,11 +239,24 @@ class GeminiImageBackend:
 
     @staticmethod
     def _process_image_response(response, output_path: Path) -> Image.Image:
-        """解析图片生成响应并保存到文件。"""
-        for part in response.parts:
+        """解析图片生成响应并保存到文件。
+
+        无图时抛出带诊断信息的错误(finish_reason / 拦截原因 / 模型返回文本),而不是让
+        ``for part in response.parts`` 在 ``parts`` 为 None 时崩成难懂的 TypeError。
+        HTTP 成功但无 inlineData 的常见原因是安全拦截或该模型不产图(见 Gemini 官方文档)。
+        """
+        if response is None:
+            raise RuntimeError("Gemini API 返回 None 响应（可能是超时或网络错误）")
+
+        parts = getattr(response, "parts", None)
+        if parts is None:
+            logger.error("response.parts 为 None，response=%s", response)
+            raise RuntimeError(_describe_missing_image(response))
+
+        for part in parts:
             if part.inline_data is not None:
                 image = part.as_image()
                 output_path.parent.mkdir(parents=True, exist_ok=True)
                 image.save(output_path)
                 return image
-        raise RuntimeError("API 未返回图片")
+        raise RuntimeError(_describe_missing_image(response))

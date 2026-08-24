@@ -129,6 +129,10 @@ class UpdateProjectRequest(BaseModel):
     text_backend_style: str | None = None
     style_template_id: str | None = None
     clear_style_image: bool | None = None
+    # 提示词辅助开关
+    include_prompt_layout: bool | None = None
+    include_prompt_guard: bool | None = None
+    include_prompt_negative: bool | None = None
     episodes: list[EpisodePatch] | None = None
     model_settings: dict[str, dict[str, str | None]] | None = None
 
@@ -727,6 +731,15 @@ async def update_project(name: str, req: UpdateProjectRequest, _user: CurrentUse
                         project.pop("model_settings", None)
                     else:
                         project["model_settings"] = req.model_settings
+
+                # 提示词辅助开关
+                for field in ("include_prompt_layout", "include_prompt_guard", "include_prompt_negative"):
+                    if field in req.model_fields_set:
+                        value = getattr(req, field)
+                        if value is None:
+                            project.pop(field, None)
+                        else:
+                            project[field] = value
 
                 if "episodes" in req.model_fields_set and req.episodes is not None:
                     # 合并 episodes：保留现有 episode 的完整数据，仅更新请求中显式提供的字段。
